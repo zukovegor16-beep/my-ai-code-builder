@@ -1,0 +1,187 @@
+# =============================================================================
+# Part 11 — Istio Security (PeerAuthentication, RequestAuthentication, AuthorizationPolicy)
+# =============================================================================
+# File: infra/istio/security.yaml
+# Enforces mutual TLS (mTLS) across the entire mesh and sets granular
+# access control policies for different services.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# PeerAuthentication – mTLS for the whole mesh
+# ---------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  mtls:
+    mode: STRICT
+---
+# Exclude kube-system and other system namespaces from strict mTLS
+# if they do not support it (optional).
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: kube-system
+  namespace: kube-system
+spec:
+  mtls:
+    mode: PERMISSIVE
+---
+# ---------------------------------------------------------------------------
+# RequestAuthentication – JWT validation for incoming requests
+# ---------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+  name: api-jwt-auth
+  namespace: crawler
+spec:
+  selector:
+    matchLabels:
+      app: crawler-api
+  jwtRules:
+    - issuer: "https://auth.crawler-ecosystem.com/realms/crawler"
+      jwksUri: "https://auth.crawler-ecosystem.com/realms/crawler/protocol/openid-connect/certs"
+      audiences:
+        - "crawler-api"
+      forwardOriginalToken: true
+---
+# ---------------------------------------------------------------------------
+# AuthorizationPolicy – Allow only authenticated requests to the API
+# ---------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: api-policy
+  namespace: crawler
+spec:
+  selector:
+    matchLabels:
+      app: crawler-api
+  rules:
+    - from:
+        - source:
+            requestPrincipals: ["*"]
+      to:
+        - operation:
+            paths:
+              - "/api/*"
+              - "/ws"
+            methods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+              - OPTIONS
+    # Allow health checks without authentication
+    - to:
+        - operation:
+            paths:
+              - "/api/health"
+            methods:
+              - GET
+---
+# ---------------------------------------------------------------------------
+# AuthorizationPolicy – Allow monitoring tools to scrape metrics
+# ---------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: monitoring-policy
+  namespace: crawler
+spec:
+  selector:
+    matchLabels:
+      app: crawler-api
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/monitoring/sa/prometheus"
+              - "cluster.local/ns/monitoring/sa/grafana"
+      to:
+        - operation:
+            paths:
+              - "/metrics"
+            methods:
+              - GET
+---
+# ---------------------------------------------------------------------------
+# AuthorizationPolicy – Deny all by default in the crawler namespace
+# (applied after other policies)
+# ---------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-all
+  namespace: crawler
+spec:
+  {}
+---
+# ---------------------------------------------------------------------------
+# AuthorizationPolicy – Allow internal worker ↔ API communication
+# ---------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: worker-to-api
+  namespace: crawler
+spec:
+  selector:
+    matchLabels:
+      app: crawler-api
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/crawler/sa/crawler-crawler"
+      to:
+        - operation:
+            methods:
+              - POST
+            paths:
+              - "/api/*"
+---
+# ---------------------------------------------------------------------------
+# AuthorizationPolicy – Restrict access to databases (PostgreSQL, KeyDB)
+# ---------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: database-access
+  namespace: databases
+spec:
+  selector:
+    matchLabels:
+      app: postgresql
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/crawler/sa/crawler-crawler"
+              - "cluster.local/ns/monitoring/sa/prometheus"
+      to:
+        - operation:
+            ports:
+              - "5432"
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: keydb-access
+  namespace: databases
+spec:
+  selector:
+    matchLabels:
+      app: keydb
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/crawler/sa/crawler-crawler"
+      to:
+        - operation:
+            ports:
+              - "6379"

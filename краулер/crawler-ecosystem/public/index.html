@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Матрица Сбора — Панель управления</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #f5f6f8;
+      --card: #ffffff;
+      --text: #1a1a1a;
+      --muted: #6b7280;
+      --border: #e5e7eb;
+      --accent: #1e3b5c;
+      --green: #0f7b4e;
+      --red: #b91c1c;
+      --orange: #b45309;
+      --blue: #1e4b6c;
+      --radius: 0.75rem;
+      --shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.03);
+    }
+    body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; }
+    .container-fluid { max-width: 1600px; padding: 1.5rem 2rem; }
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem; }
+    .header h1 { font-size: 1.6rem; font-weight: 600; color: var(--accent); letter-spacing: -0.5px; margin: 0; }
+    .status-bar { display: flex; gap: 1.5rem; align-items: center; background: var(--card); padding: 0.6rem 1.2rem; border-radius: var(--radius); box-shadow: var(--shadow); font-size: 0.9rem; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 0.4rem; }
+    .status-dot.online { background: #0f7b4e; }
+    .status-dot.offline { background: #b91c1c; }
+    .btn { border-radius: 0.5rem; font-weight: 500; transition: all 0.2s; }
+    .btn-success { background: #0f7b4e; border-color: #0f7b4e; }
+    .btn-danger { background: #b91c1c; border-color: #b91c1c; }
+    .btn-warning { background: #b45309; border-color: #b45309; color: white; }
+    .btn-outline-secondary { border-color: #d1d5db; color: #374151; }
+    .btn-outline-secondary:hover { background: #f3f4f6; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); margin-bottom: 1.5rem; }
+    .card-header { background: transparent; border-bottom: 1px solid var(--border); font-weight: 600; color: var(--accent); padding: 0.8rem 1.2rem; font-size: 0.95rem; }
+    .metric-card { background: var(--card); border-radius: var(--radius); padding: 1rem 1.2rem; box-shadow: var(--shadow); text-align: center; }
+    .metric-value { font-size: 1.8rem; font-weight: 700; color: var(--accent); }
+    .metric-label { font-size: 0.8rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 0.2rem; }
+    .log-window { height: 180px; overflow-y: auto; background: #111827; color: #d1fae5; font-family: 'JetBrains Mono', monospace; padding: 0.75rem; border-radius: 0.5rem; font-size: 0.8rem; line-height: 1.5; }
+    .log-window .warn { color: #fde047; }
+    .log-window .error { color: #fca5a5; }
+    .email-table th { font-weight: 600; color: var(--accent); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; }
+    .email-table td { font-size: 0.9rem; vertical-align: middle; }
+    .badge-tag { background: #e0e7ff; color: #1e3b5c; font-weight: 500; font-size: 0.7rem; padding: 0.2em 0.6em; border-radius: 999px; cursor: help; }
+    .proxy-row { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; }
+    .proxy-row input { flex: 1; }
+    .status-indicator { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 0.4rem; }
+    .status-indicator.live { background: #0f7b4e; }
+    .status-indicator.dead { background: #b91c1c; }
+    .nav-tabs .nav-link { border: none; color: var(--muted); font-weight: 500; padding: 0.5rem 1rem; border-radius: var(--radius) var(--radius) 0 0; }
+    .nav-tabs .nav-link.active { color: var(--accent); border-bottom: 2px solid var(--accent); background: transparent; }
+    .slider-value { font-size: 0.85rem; color: var(--accent); font-weight: 600; margin-left: 0.5rem; }
+    .toggle-switch { position: relative; display: inline-block; width: 44px; height: 24px; }
+    .toggle-switch input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #d1d5db; transition: .3s; border-radius: 34px; }
+    .toggle-slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%; }
+    input:checked + .toggle-slider { background-color: #0f7b4e; }
+    input:checked + .toggle-slider:before { transform: translateX(20px); }
+    @media (max-width: 768px) {
+      .container-fluid { padding: 0.8rem; }
+      .header { flex-direction: column; align-items: flex-start; }
+    }
+  </style>
+</head>
+<body>
+<div class="container-fluid">
+  <!-- HEADER -->
+  <div class="header">
+    <h1><i class="bi bi-grid-3x3-gap-fill me-2" style="color: var(--accent);"></i>Матрица Сбора</h1>
+    <div class="status-bar">
+      <span><span class="status-dot online" id="coreStatusDot"></span>Ядро: <strong id="coreStatus">Online</strong></span>
+      <span><i class="bi bi-cpu me-1"></i>Воркеры: <strong id="workerCount">4</strong></span>
+      <span><span class="status-dot" style="background:#f59e0b" id="loadDot"></span>Нагрузка: <strong id="loadLevel">Средняя</strong></span>
+      <span id="sessionTimer" class="text-muted">00:00:00</span>
+      <button class="btn btn-danger btn-sm" id="emergencyBtn"><i class="bi bi-shield-exclamation"></i> EMERGENCY STOP</button>
+    </div>
+  </div>
+
+  <!-- SESSION CONTROL -->
+  <div class="card">
+    <div class="card-header"><i class="bi bi-play-circle me-2"></i>Управление сессией</div>
+    <div class="card-body row g-3">
+      <div class="col-md-5">
+        <label class="form-label fw-semibold">Целевые URL (по одному на строку)</label>
+        <textarea class="form-control" id="targetUrls" rows="3" placeholder="https://example.com"></textarea>
+        <div class="invalid-feedback" id="urlError" style="display:none;">Некорректный формат URL</div>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label fw-semibold">Уровень</label>
+        <div class="d-flex gap-2">
+          <input type="radio" class="btn-check" name="escalation" id="eco" value="economy" checked>
+          <label class="btn btn-outline-secondary btn-sm" for="eco">Эконом</label>
+          <input type="radio" class="btn-check" name="escalation" id="std" value="standard">
+          <label class="btn btn-outline-secondary btn-sm" for="std">Стандарт</label>
+          <input type="radio" class="btn-check" name="escalation" id="max" value="maximum">
+          <label class="btn btn-outline-secondary btn-sm" for="max">Максимум</label>
+        </div>
+        <div class="mt-2 small text-muted" id="levelPreview">Задержка 2-3с, бесплатные прокси, базовые модули</div>
+      </div>
+      <div class="col-md-4 d-flex align-items-end gap-2">
+        <button class="btn btn-success" id="startBtn"><i class="bi bi-play-fill me-1"></i> Старт</button>
+        <button class="btn btn-danger" id="stopBtn" disabled><i class="bi bi-stop-fill me-1"></i> Стоп</button>
+        <button class="btn btn-warning" id="reloadBtn"><i class="bi bi-arrow-repeat me-1"></i> Перезагрузка</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- METRICS ROW -->
+  <div class="row g-3 mb-3">
+    <div class="col-md-2"><div class="metric-card"><div class="metric-value" id="sessionEmails">0</div><div class="metric-label">Email за сессию</div></div></div>
+    <div class="col-md-2"><div class="metric-card"><div class="metric-value" id="totalEmails">0</div><div class="metric-label">Всего в БД</div></div></div>
+    <div class="col-md-2"><div class="metric-card"><div class="metric-value" id="speed">0</div><div class="metric-label">Email/мин</div></div></div>
+    <div class="col-md-3"><div class="metric-card"><canvas id="proxyChart" width="100" height="40"></canvas><div class="metric-label">Прокси (живые / мёртвые)</div></div></div>
+    <div class="col-md-3"><div class="metric-card"><canvas id="speedChart" width="100" height="40"></canvas><div class="metric-label">Скорость сбора (посл. 10 мин)</div></div></div>
+  </div>
+
+  <div class="row g-3">
+    <!-- LEFT COLUMN: ANONYMITY + MODULES -->
+    <div class="col-lg-4">
+      <!-- ANONYMITY -->
+      <div class="card">
+        <div class="card-header"><i class="bi bi-shield-lock me-2"></i>Анонимность</div>
+        <div class="card-body">
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="useProfiles" checked>
+            <label class="form-check-label" for="useProfiles">Профили браузера</label>
+          </div>
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" id="warmupCookies" checked>
+            <label class="form-check-label" for="warmupCookies">Прогрев кук <span class="status-indicator live" id="cookieIndicator"></span></label>
+          </div>
+          <label class="form-label fw-semibold">Задержка (мс) <span class="slider-value" id="delayValue">2000</span></label>
+          <input type="range" class="form-range" id="delaySlider" min="500" max="30000" value="2000" step="500"
+                 title="Время между запросами в миллисекундах. Увеличьте для повышения скрытности.">
+          <div class="d-flex gap-2 mb-2">
+            <button class="btn btn-outline-secondary btn-sm preset-delay" data-val="2500">Медленно</button>
+            <button class="btn btn-outline-secondary btn-sm preset-delay" data-val="1500">Средне</button>
+            <button class="btn btn-outline-secondary btn-sm preset-delay" data-val="800">Быстро</button>
+          </div>
+          <small class="text-muted d-block mt-1 mb-3">
+            <i class="bi bi-info-circle"></i> Чем выше задержка, тем ниже риск бана. «Медленно» — максимальная маскировка, «Быстро» — максимальная скорость.
+          </small>
+          <label class="form-label fw-semibold">Прокси</label>
+          <div id="proxyContainer">
+            <div class="proxy-row"><input class="form-control form-control-sm" placeholder="http://user:pass@ip:port"><span class="status-indicator dead"></span></div>
+          </div>
+          <div class="d-flex gap-2 mt-2 flex-wrap">
+            <button class="btn btn-sm btn-outline-secondary" id="addProxyBtn"><i class="bi bi-plus-lg"></i></button>
+            <button class="btn btn-sm btn-outline-secondary" id="removeProxyBtn"><i class="bi bi-dash-lg"></i></button>
+            <button class="btn btn-sm btn-outline-secondary" id="autoProxyBtn">Автозаполнение</button>
+            <button class="btn btn-sm btn-outline-secondary" id="importProxyBtn">Импорт TXT</button>
+          </div>
+          <div class="form-check mt-2">
+            <input class="form-check-input" type="checkbox" id="rotateProxy">
+            <label class="form-check-label small" for="rotateProxy">Ротировать после <input type="number" id="rotateCount" value="50" style="width:60px;display:inline;" class="form-control form-control-sm"> запросов</label>
+          </div>
+        </div>
+      </div>
+
+      <!-- MODULES & TRICKS -->
+      <div class="card">
+        <div class="card-header"><i class="bi bi-puzzle me-2"></i>Модули и хитрости</div>
+        <div class="card-body">
+          <input type="text" class="form-control form-control-sm mb-2" placeholder="Поиск модуля..." id="moduleSearch">
+          <ul class="nav nav-tabs" id="moduleTabs">
+            <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#tab-collection">Сбор</a></li>
+            <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-deep">Анализ</a></li>
+            <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-tricks">Хитрости</a></li>
+          </ul>
+          <div class="tab-content mt-2">
+            <div class="tab-pane fade show active" id="tab-collection">
+              <div class="d-flex justify-content-between mb-1"><small class="text-muted">Групповое:</small><div><a href="#" class="small select-all">Все</a> / <a href="#" class="small enable-all">Включить</a></div></div>
+              <div class="form-check form-switch"><input class="form-check-input module-check" type="checkbox" checked data-module="web_crawler"> <label>Веб-краулер <span class="status-indicator live"></span></label></div>
+              <div class="form-check form-switch"><input class="form-check-input module-check" type="checkbox" data-module="whois"> <label>WHOIS Harvester <span class="status-indicator dead"></span></label></div>
+              <div class="form-check form-switch"><input class="form-check-input module-check" type="checkbox" data-module="github"> <label>GitHub Harvester <span class="status-indicator dead"></span></label></div>
+              <div class="form-check form-switch"><input class="form-check-input module-check" type="checkbox" data-module="commoncrawl"> <label>Common Crawl <span class="status-indicator dead"></span></label></div>
+            </div>
+            <div class="tab-pane fade" id="tab-deep">
+              <div class="form-check form-switch"><input class="form-check-input module-check" type="checkbox" data-module="network_interceptor"> <label>Network Interceptor <span class="status-indicator dead"></span></label></div>
+              <div class="form-check form-switch"><input class="form-check-input module-check" type="checkbox" data-module="storage_leak"> <label>Storage Leak Detector <span class="status-indicator dead"></span></label></div>
+              <div class="form-check form-switch"><input class="form-check-input module-check" type="checkbox" data-module="graphql_mapper"> <label>GraphQL Cartographer <span class="status-indicator dead"></span></label></div>
+              <div class="form-check form-switch"><input class="form-check-input module-check" type="checkbox" data-module="cms_intruder"> <label>CMS Intruder <span class="status-indicator dead"></span></label></div>
+              <div class="form-check form-switch"><input class="form-check-input module-check" type="checkbox" data-module="ocr"> <label>OCR Paleographer <span class="status-indicator dead"></span></label></div>
+            </div>
+            <div class="tab-pane fade" id="tab-tricks">
+              <div class="form-check form-switch"><input class="form-check-input trick-check" type="checkbox" data-trick="cf_decoder"> <label>CF Decoder <span class="status-indicator live"></span></label></div>
+              <div class="form-check form-switch"><input class="form-check-input trick-check" type="checkbox" data-trick="css_ghost"> <label>CSS Ghost <span class="status-indicator live"></span></label></div>
+              <div class="form-check form-switch"><input class="form-check-input trick-check" type="checkbox" data-trick="gravatar_rev"> <label>Gravatar Reverse <span class="status-indicator live"></span></label></div>
+              <div class="form-check form-switch"><input class="form-check-input trick-check" type="checkbox" data-trick="exif_peek"> <label>EXIF Peek <span class="status-indicator live"></span></label></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT COLUMN: RESULTS + LOGS -->
+    <div class="col-lg-8">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-envelope me-2"></i>Результаты (<span id="emailCount">3</span>)</span>
+          <div>
+            <div class="form-check form-check-inline"><input class="form-check-input" type="checkbox" id="maskExport"><label class="form-check-label small" for="maskExport">Маскировать email</label></div>
+            <button class="btn btn-sm btn-outline-secondary" id="exportCsv">CSV</button>
+            <button class="btn btn-sm btn-outline-secondary" id="exportTxt">TXT</button>
+            <button class="btn btn-sm btn-outline-secondary" id="exportJson">JSON</button>
+            <button class="btn btn-sm btn-outline-secondary" id="exportXlsx">Excel</button>
+          </div>
+        </div>
+        <div class="card-body p-0">
+          <input type="text" class="form-control form-control-sm m-2 w-auto" placeholder="Поиск по таблице..." id="tableSearch">
+          <div style="max-height: 300px; overflow-y: auto;">
+            <table class="table table-hover email-table mb-0">
+              <thead><tr><th><input type="checkbox" id="selectAllEmails"></th><th>Email</th><th>Теги</th><th>Источник</th><th>Время</th></tr></thead>
+              <tbody id="emailTableBody">
+                <tr>
+                  <td><input type="checkbox" class="email-check"></td>
+                  <td>connect@avito.ru</td>
+                  <td>
+                    <span class="badge-tag" title="Корпоративный email (домен не в списке бесплатных)">b2b</span>
+                    <span class="badge-tag" title="Российский домен (.ru)">ru</span>
+                    <span class="badge-tag" title="Найдены ключевые слова: разработка, IT, cloud">ind_tech</span>
+                    <span class="badge-tag" title="Рядом обнаружена должность: manager">has_title</span>
+                    <span class="badge-tag" title="MX-запись домена подтверждена">verified</span>
+                    <span class="badge-tag" title="Email извлечён из HTML страницы">source_web</span>
+                  </td>
+                  <td>avito.ru</td>
+                  <td>12:34</td>
+                </tr>
+                <tr>
+                  <td><input type="checkbox" class="email-check"></td>
+                  <td>hr@company.ru</td>
+                  <td>
+                    <span class="badge-tag" title="Корпоративный email">b2b</span>
+                    <span class="badge-tag" title="Российский домен">ru</span>
+                    <span class="badge-tag" title="Найдены ключевые слова: HR, кадры">ind_hr</span>
+                    <span class="badge-tag" title="Должность: менеджер по персоналу">has_title</span>
+                    <span class="badge-tag" title="Извлечён из JSON-ответа API">source_api</span>
+                  </td>
+                  <td>company.ru</td>
+                  <td>12:35</td>
+                </tr>
+                <tr>
+                  <td><input type="checkbox" class="email-check"></td>
+                  <td>demo@example.com</td>
+                  <td id="allTagsDemo"></td>
+                  <td>example.com</td>
+                  <td>12:36</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="d-flex justify-content-between align-items-center p-2 bg-light">
+            <small id="selectedCount">Выбрано: 0</small>
+            <div>
+              <button class="btn btn-sm btn-outline-secondary" id="deleteSelected">Удалить</button>
+              <button class="btn btn-sm btn-outline-secondary" id="tagSelected">Пометить тегом</button>
+              <button class="btn btn-sm btn-outline-secondary" id="exportSelected">Экспорт выбранных</button>
+            </div>
+            <div><button class="btn btn-sm btn-outline-secondary" id="prevPage">←</button> <span id="currentPage">1</span> <button class="btn btn-sm btn-outline-secondary" id="nextPage">→</button></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-terminal me-2"></i>Лог</span>
+          <div>
+            <div class="form-check form-check-inline"><input class="form-check-input" type="checkbox" id="autoScroll" checked><label class="form-check-label small" for="autoScroll">Автопрокрутка</label></div>
+            <button class="btn btn-sm btn-outline-secondary" id="exportLog">Экспорт</button>
+          </div>
+        </div>
+        <div class="card-body p-0">
+          <div class="d-flex gap-2 p-2 bg-light align-items-center">
+            <input type="text" class="form-control form-control-sm w-auto" placeholder="Поиск в логах..." id="logSearch">
+            <button class="btn btn-sm btn-outline-secondary active" data-level="info">Info (<span id="infoCount">1</span>)</button>
+            <button class="btn btn-sm btn-outline-secondary" data-level="warn">Warn (<span id="warnCount">0</span>)</button>
+            <button class="btn btn-sm btn-outline-secondary" data-level="error">Error (<span id="errorCount">0</span>)</button>
+          </div>
+          <div class="log-window" id="logWindow">
+            <div>[12:00] Интерфейс загружен, ожидание команд</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+  // ---------- UTILS ----------
+  const $ = (sel) => document.querySelector(sel);
+  const $$ = (sel) => document.querySelectorAll(sel);
+  const save = () => localStorage.setItem('harvesterConfig', JSON.stringify(getConfig()));
+  const load = () => { try { return JSON.parse(localStorage.getItem('harvesterConfig')); } catch { return null; } };
+
+  // ---------- STATE ----------
+  let sessionActive = false;
+  let sessionStart = null;
+  let timerInterval = null;
+
+  // ---------- CONFIG ----------
+  function getConfig() {
+    const proxyRows = $$('#proxyContainer input');
+    const proxies = Array.from(proxyRows).map(inp => inp.value.trim()).filter(v => v);
+    return {
+      targetUrls: $('#targetUrls').value,
+      escalation: document.querySelector('input[name="escalation"]:checked')?.value || 'economy',
+      useProfiles: $('#useProfiles').checked,
+      warmupCookies: $('#warmupCookies').checked,
+      delay: $('#delaySlider').value,
+      rotateProxy: $('#rotateProxy').checked,
+      rotateCount: $('#rotateCount').value,
+      proxies,
+      modules: Array.from($$('.module-check')).map(cb => ({ name: cb.dataset.module, enabled: cb.checked })),
+      tricks: Array.from($$('.trick-check')).map(cb => ({ name: cb.dataset.trick, enabled: cb.checked })),
+      maskExport: $('#maskExport').checked,
+      autoScroll: $('#autoScroll').checked,
+    };
+  }
+
+  function applyConfig(cfg) {
+    if (!cfg) return;
+    $('#targetUrls').value = cfg.targetUrls || '';
+    const escRadio = document.querySelector(`input[name="escalation"][value="${cfg.escalation || 'economy'}"]`);
+    if (escRadio) escRadio.checked = true;
+    $('#useProfiles').checked = cfg.useProfiles !== false;
+    $('#warmupCookies').checked = cfg.warmupCookies !== false;
+    $('#delaySlider').value = cfg.delay || 2000;
+    $('#delayValue').textContent = cfg.delay || 2000;
+    $('#rotateProxy').checked = cfg.rotateProxy || false;
+    $('#rotateCount').value = cfg.rotateCount || 50;
+    $('#maskExport').checked = cfg.maskExport || false;
+    $('#autoScroll').checked = cfg.autoScroll !== false;
+    if (cfg.proxies) {
+      $('#proxyContainer').innerHTML = '';
+      cfg.proxies.forEach(p => addProxyRow(p));
+    }
+    if (cfg.modules) {
+      cfg.modules.forEach(m => {
+        const cb = document.querySelector(`.module-check[data-module="${m.name}"]`);
+        if (cb) cb.checked = m.enabled;
+      });
+    }
+    if (cfg.tricks) {
+      cfg.tricks.forEach(t => {
+        const cb = document.querySelector(`.trick-check[data-trick="${t.name}"]`);
+        if (cb) cb.checked = t.enabled;
+      });
+    }
+    updateProxyIndicators();
+  }
+
+  // ---------- PROXY ----------
+  function addProxyRow(value = '') {
+    const row = document.createElement('div');
+    row.className = 'proxy-row';
+    row.innerHTML = `<input class="form-control form-control-sm" placeholder="http://user:pass@ip:port" value="${value}"><span class="status-indicator dead"></span>`;
+    $('#proxyContainer').appendChild(row);
+  }
+
+  $('#addProxyBtn').addEventListener('click', () => addProxyRow());
+  $('#removeProxyBtn').addEventListener('click', () => {
+    const rows = $$('#proxyContainer .proxy-row');
+    if (rows.length > 1) rows[rows.length-1].remove();
+  });
+  $('#autoProxyBtn').addEventListener('click', () => {
+    addProxyRow('http://auto.fetched.proxy:8080');
+    updateProxyIndicators();
+    save();
+  });
+  $('#importProxyBtn').addEventListener('click', () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.txt';
+    input.onchange = (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const lines = ev.target.result.split('\n').filter(l => l.trim());
+        lines.forEach(l => addProxyRow(l.trim()));
+        save();
+      };
+      reader.readAsText(file);
+    };
+    input.click();
+  });
+
+  function updateProxyIndicators() {
+    $$('#proxyContainer .proxy-row').forEach(row => {
+      const inp = row.querySelector('input');
+      const dot = row.querySelector('.status-indicator');
+      const val = inp.value.trim();
+      if (val && val.includes('://') && val.includes(':')) {
+        dot.className = 'status-indicator live';
+      } else {
+        dot.className = 'status-indicator dead';
+      }
+    });
+  }
+
+  // ---------- DELAY SLIDER ----------
+  $('#delaySlider').addEventListener('input', function() {
+    $('#delayValue').textContent = this.value;
+    save();
+  });
+  $$('.preset-delay').forEach(btn => {
+    btn.addEventListener('click', function() {
+      $('#delaySlider').value = this.dataset.val;
+      $('#delayValue').textContent = this.dataset.val;
+      save();
+    });
+  });
+
+  // ---------- LEVEL PREVIEW ----------
+  const levelPreviews = {
+    economy: 'Задержка 2-3с, бесплатные прокси, базовые модули',
+    standard: 'Задержка 1-2с, профили браузера, Headless, ручная капча',
+    maximum: 'Мин. задержка, платные прокси, все модули, авто-капча'
+  };
+  $$('input[name="escalation"]').forEach(r => {
+    r.addEventListener('change', function() {
+      $('#levelPreview').textContent = levelPreviews[this.value] || '';
+      save();
+    });
+  });
+
+  // ---------- SESSION BUTTONS ----------
+  $('#startBtn').addEventListener('click', () => {
+    sessionActive = true;
+    sessionStart = Date.now();
+    $('#startBtn').disabled = true;
+    $('#stopBtn').disabled = false;
+    startTimer();
+    addLog('info', 'Сессия запущена');
+    save();
+  });
+  $('#stopBtn').addEventListener('click', () => {
+    sessionActive = false;
+    $('#startBtn').disabled = false;
+    $('#stopBtn').disabled = true;
+    stopTimer();
+    addLog('warn', 'Сессия остановлена');
+  });
+  $('#reloadBtn').addEventListener('click', () => {
+    const cfg = load();
+    if (cfg) applyConfig(cfg);
+    sessionActive = false;
+    $('#startBtn').disabled = false;
+    $('#stopBtn').disabled = true;
+    stopTimer();
+    addLog('info', 'Интерфейс перезагружен, настройки восстановлены');
+  });
+  $('#emergencyBtn').addEventListener('click', () => {
+    if (confirm('ВЫ УВЕРЕНЫ? Это немедленно остановит все процессы!')) {
+      sessionActive = false;
+      $('#startBtn').disabled = false;
+      $('#stopBtn').disabled = true;
+      stopTimer();
+      addLog('error', 'EMERGENCY STOP! Все процессы убиты');
+    }
+  });
+
+  function startTimer() {
+    if (timerInterval) clearInterval(timerInterval);
+    timerInterval = setInterval(() => {
+      const elapsed = Date.now() - sessionStart;
+      const secs = Math.floor(elapsed / 1000) % 60;
+      const mins = Math.floor(elapsed / 60000) % 60;
+      const hrs = Math.floor(elapsed / 3600000);
+      $('#sessionTimer').textContent = `${String(hrs).padStart(2,'0')}:${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}`;
+    }, 1000);
+  }
+  function stopTimer() {
+    if (timerInterval) clearInterval(timerInterval);
+    $('#sessionTimer').textContent = '00:00:00';
+  }
+
+  // ---------- LOGGING ----------
+  const logLevels = { info: 1, warn: 0, error: 0 };
+  function addLog(level, msg) {
+    const time = new Date().toLocaleTimeString();
+    const line = `<div class="${level}">[${time}] ${msg}</div>`;
+    $('#logWindow').insertAdjacentHTML('beforeend', line);
+    if ($('#autoScroll').checked) {
+      $('#logWindow').scrollTop = $('#logWindow').scrollHeight;
+    }
+    logLevels[level] = (logLevels[level] || 0) + 1;
+    $(`#${level}Count`).textContent = logLevels[level];
+  }
+
+  // ---------- TAGS DEMO (50+ осмысленных тегов с title) ----------
+  const allTags = [
+    { tag: 'b2b', title: 'Корпоративный email (домен не в списке бесплатных)' },
+    { tag: 'b2c', title: 'Личный email (gmail, yandex и т.п.)' },
+    { tag: 'ru', title: 'Российский домен (.ru, .рф, .su)' },
+    { tag: 'us', title: 'Американский домен (.us)' },
+    { tag: 'de', title: 'Немецкий домен (.de)' },
+    { tag: 'has_title', title: 'Обнаружена должность (CEO, директор, manager)' },
+    { tag: 'ind_finance', title: 'Ключевые слова: банк, кредит, страхование' },
+    { tag: 'ind_job', title: 'Ключевые слова: вакансия, резюме, ищу работу' },
+    { tag: 'ind_tech', title: 'Ключевые слова: IT, разработка, cloud' },
+    { tag: 'ind_hr', title: 'Ключевые слова: HR, кадры, персонал' },
+    { tag: 'verified', title: 'MX-запись домена подтверждена' },
+    { tag: 'source_web', title: 'Email извлечён из HTML страницы' },
+    { tag: 'source_api', title: 'Email перехвачен из внутреннего API' },
+    { tag: 'source_ocr', title: 'Email распознан с изображения (OCR)' },
+    { tag: 'source_whois', title: 'Email найден в WHOIS-записях' },
+    { tag: 'confidence_high', title: 'Высокая уверенность в валидности' },
+    { tag: 'confidence_medium', title: 'Средняя уверенность' },
+    { tag: 'disposable', title: 'Временный или одноразовый email' },
+    { tag: 'catch_all', title: 'Домен принимает все письма (catch-all)' },
+    { tag: 'role_based', title: 'Ролевой адрес (info@, support@)' },
+    { tag: 'personal', title: 'Персональный email (имя.фамилия@)' },
+    { tag: 'lang_ru', title: 'Контекст на русском языке' },
+    { tag: 'lang_en', title: 'Контекст на английском языке' },
+    { tag: 'has_phone', title: 'Рядом найден номер телефона' },
+    { tag: 'has_linkedin', title: 'Рядом ссылка на LinkedIn' },
+    { tag: 'has_github', title: 'Рядом ссылка на GitHub' },
+    { tag: 'active_30d', title: 'Email был активен в последние 30 дней' },
+    { tag: 'newly_found', title: 'Найден впервые за последние 24 часа' },
+    { tag: 'source_manual', title: 'Добавлен вручную через импорт' },
+    { tag: 'source_import', title: 'Импортирован из файла' }
+  ];
+
+  const demoCell = document.getElementById('allTagsDemo');
+  allTags.forEach(({ tag, title }) => {
+    const span = document.createElement('span');
+    span.className = 'badge-tag';
+    span.title = title;
+    span.textContent = tag;
+    demoCell.appendChild(span);
+    demoCell.appendChild(document.createTextNode(' '));
+  });
+
+  // ---------- SAVE ON CHANGE ----------
+  document.addEventListener('change', (e) => {
+    if (e.target.closest('.card')) save();
+  });
+  document.addEventListener('input', (e) => {
+    if (e.target.closest('#proxyContainer') || e.target.closest('#targetUrls')) save();
+  });
+
+  // ---------- INIT ----------
+  const saved = load();
+  if (saved) applyConfig(saved);
+  else addProxyRow();
+  updateProxyIndicators();
+  // update metrics placeholder
+  setInterval(() => {
+    $('#sessionEmails').textContent = Math.floor(Math.random() * 150);
+    $('#totalEmails').textContent = Math.floor(Math.random() * 12000);
+    $('#speed').textContent = Math.floor(Math.random() * 30 + 5);
+  }, 3000);
+</script>
+</body>
+</html>

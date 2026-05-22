@@ -1,0 +1,807 @@
+openapi: "3.0.3"
+info:
+  title: "Neural Crawler Ecosystem — Self-Evolving API"
+  description: "Контракт REST API автономного самообучающегося краулера. Экосистема способна к самооптимизации, прогнозированию, A/B-тестированию стратегий и автоматическому восстановлению. Все модули взаимодействуют строго по данному контракту. Допустима кодогенерация клиентского SDK."
+  version: "2.0.0"
+  contact:
+    name: "Core AI Team"
+    email: "agi@neural-crawler.tech"
+
+servers:
+  - url: "http://localhost:3000/api"
+    description: "Локальная среда разработки"
+  - url: "https://api.neural-crawler.tech/api"
+    description: "Продакшн (HTTPS)"
+
+security:
+  - bearerAuth: []
+
+paths:
+  /sessions:
+    post:
+      tags: [Sessions]
+      summary: "Создать новую сессию краулинга"
+      operationId: startSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartSessionRequest"
+      responses:
+        "201":
+          description: "Сессия создана"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+    get:
+      tags: [Sessions]
+      summary: "Получить список сессий с возможностью фильтрации"
+      operationId: listSessions
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, running, paused, completed, failed, cancelled]
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 1000 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: "Список сессий"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Session" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /sessions/{sessionId}:
+    get:
+      tags: [Sessions]
+      summary: "Детали сессии"
+      operationId: getSession
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: "Сессия", content: { application/json: { schema: { $ref: "#/components/schemas/Session" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /sessions/{sessionId}/stop:
+    post:
+      tags: [Sessions]
+      summary: "Остановить сессию"
+      operationId: stopSession
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { reason: { type: string } } }
+      responses:
+        "200": { description: "Остановлена", content: { application/json: { schema: { $ref: "#/components/schemas/Session" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /sessions/{sessionId}/pause:
+    post:
+      tags: [Sessions]
+      operationId: pauseSession
+      parameters: [{ name: sessionId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "200": { description: "Приостановлена", content: { application/json: { schema: { $ref: "#/components/schemas/Session" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /sessions/{sessionId}/resume:
+    post:
+      tags: [Sessions]
+      operationId: resumeSession
+      parameters: [{ name: sessionId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "200": { description: "Возобновлена", content: { application/json: { schema: { $ref: "#/components/schemas/Session" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /captcha/solve:
+    post:
+      tags: [Captcha]
+      summary: "Отправить решение CAPTCHA"
+      operationId: solveCaptcha
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CaptchaSolveRequest" }
+      responses:
+        "200": { description: "Решена", content: { application/json: { schema: { $ref: "#/components/schemas/SuccessResponse" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "Сессия не найдена" }
+        "408": { description: "Время ожидания истекло" }
+
+  /emails:
+    get:
+      tags: [Emails]
+      summary: "Получить список найденных email с фильтрацией и пагинацией"
+      operationId: listEmails
+      parameters:
+        - name: tags
+          in: query
+          schema: { type: array, items: { type: string } }
+          explode: false
+        - name: verified
+          in: query
+          schema: { type: boolean }
+        - name: confidence_min
+          in: query
+          schema: { type: number, minimum: 0, maximum: 1 }
+        - name: date_from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: date_to
+          in: query
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 1000 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: "Список email"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EmailList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /emails/export:
+    post:
+      tags: [Emails]
+      summary: "Экспортировать email в файл (JSON/CSV/XLSX)"
+      operationId: exportEmails
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ExportRequest" }
+      responses:
+        "200":
+          description: "Файл экспорта"
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+            application/json:
+              schema: { type: object, properties: { downloadUrl: { type: string, format: uri } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /proxy/status:
+    get:
+      tags: [Proxy]
+      summary: "Состояние пула прокси"
+      operationId: getProxyStatus
+      responses:
+        "200":
+          description: "Статус пула"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProxyPoolStatus" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /proxy/fetch-free:
+    post:
+      tags: [Proxy]
+      summary: "Загрузить бесплатные прокси из настроенных источников"
+      operationId: fetchFreeProxy
+      responses:
+        "200": { description: "Запущено", content: { application/json: { schema: { $ref: "#/components/schemas/SuccessResponse" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /workers:
+    get:
+      tags: [Workers]
+      summary: "Список активных воркеров и их состояние"
+      operationId: listWorkers
+      responses:
+        "200":
+          description: "Список воркеров"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/WorkerStatus" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /health:
+    get:
+      tags: [Monitoring]
+      summary: "Проверка здоровья системы"
+      operationId: healthCheck
+      responses:
+        "200":
+          description: "Состояние"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthResponse" }
+        "503":
+          description: "Система нездорова"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthResponse" }
+
+  /metrics:
+    get:
+      tags: [Monitoring]
+      summary: "Метрики Prometheus"
+      operationId: getMetrics
+      responses:
+        "200":
+          description: "Prometheus метрики"
+          content:
+            text/plain:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /circuit/status:
+    get:
+      tags: [Monitoring]
+      summary: "Состояние всех circuit breaker'ов"
+      operationId: getCircuitStatus
+      responses:
+        "200":
+          description: "Список состояний"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/CircuitBreakerStatus" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /circuit/reset:
+    post:
+      tags: [Monitoring]
+      summary: "Принудительно сбросить circuit breaker"
+      operationId: resetCircuitBreaker
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [module], properties: { module: { type: string } } }
+      responses:
+        "200": { description: "Сброшен" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /audit/log:
+    get:
+      tags: [Audit]
+      summary: "Получить WORM-аудит лог"
+      operationId: getAuditLog
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 1000 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+        - name: action
+          in: query
+          schema: { type: string }
+        - name: outcome
+          in: query
+          schema: { type: string, enum: [success, failure, denied] }
+      responses:
+        "200":
+          description: "Список записей аудита"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AuditEntry" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /audit/verify-chain:
+    get:
+      tags: [Audit]
+      summary: "Проверить целостность WORM-цепочки аудита"
+      operationId: verifyAuditChain
+      responses:
+        "200":
+          description: "Результат проверки"
+          content:
+            application/json:
+              schema: { type: object, properties: { valid: { type: boolean }, brokenAt: { type: string, format: uuid } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /auth/login:
+    post:
+      tags: [Authentication]
+      summary: "Аутентификация пользователя"
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: "JWT-токены"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { description: "Неверные учетные данные" }
+
+  /auth/refresh:
+    post:
+      tags: [Authentication]
+      summary: "Обновить access-токен"
+      operationId: refreshToken
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [refreshToken], properties: { refreshToken: { type: string } } }
+      responses:
+        "200": { description: "Новый токен", content: { application/json: { schema: { $ref: "#/components/schemas/TokenResponse" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /auth/2fa/setup:
+    post:
+      tags: [Authentication]
+      summary: "Настроить двухфакторную аутентификацию"
+      operationId: setup2FA
+      responses:
+        "200":
+          description: "QR-код и секрет"
+          content:
+            application/json:
+              schema: { type: object, properties: { secret: { type: string }, qrCodeUrl: { type: string } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /graphql:
+    post:
+      tags: [GraphQL]
+      summary: "GraphQL-эндпоинт (запросы и мутации)"
+      operationId: graphqlQuery
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, properties: { query: { type: string }, variables: { type: object }, operationName: { type: string } } }
+      responses:
+        "200":
+          description: "Результат GraphQL"
+          content:
+            application/json:
+              schema: { type: object }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /ml/models:
+    get:
+      tags: [Machine Learning]
+      summary: "Список активных ML-моделей с их версиями и метриками"
+      operationId: listModels
+      responses:
+        "200":
+          description: "Список моделей"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ModelInfo" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /ml/models/{model_id}/predict:
+    post:
+      tags: [Machine Learning]
+      summary: "Выполнить предсказание конкретной модели"
+      operationId: modelPredict
+      parameters:
+        - name: model_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PredictionRequest" }
+      responses:
+        "200":
+          description: "Результат предсказания"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PredictionResponse" }
+        "404": { description: "Модель не найдена" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /ml/models/{model_id}/retrain:
+    post:
+      tags: [Machine Learning]
+      summary: "Запустить дообучение модели на новых данных"
+      operationId: retrainModel
+      parameters:
+        - name: model_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { force: { type: boolean, default: false } } }
+      responses:
+        "202": { description: "Задача дообучения поставлена в очередь" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /ab/experiments:
+    get:
+      tags: [A/B Testing]
+      summary: "Список активных и завершённых A/B-экспериментов"
+      operationId: listExperiments
+      responses:
+        "200":
+          description: "Список экспериментов"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Experiment" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [A/B Testing]
+      summary: "Создать новый A/B-эксперимент"
+      operationId: createExperiment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateExperimentRequest" }
+      responses:
+        "201": { description: "Эксперимент создан", content: { application/json: { schema: { $ref: "#/components/schemas/Experiment" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /ab/experiments/{experiment_id}/activate:
+    post:
+      tags: [A/B Testing]
+      summary: "Активировать существующий эксперимент"
+      operationId: activateExperiment
+      parameters:
+        - name: experiment_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: "Активирован" }
+        "404": { description: "Эксперимент не найден" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /ab/experiments/{experiment_id}/stop:
+    post:
+      tags: [A/B Testing]
+      summary: "Остановить эксперимент, зафиксировав результаты"
+      operationId: stopExperiment
+      parameters:
+        - name: experiment_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: "Остановлен", content: { application/json: { schema: { $ref: "#/components/schemas/Experiment" } } } }
+        "404": { description: "Не найден" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /feedback:
+    post:
+      tags: [Self-Learning]
+      summary: "Отправить обратную связь для онлайн-обучения системы (подкрепление)"
+      operationId: sendFeedback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FeedbackMessage" }
+      responses:
+        "202": { description: "Обратная связь принята для обучения" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /system/scale:
+    post:
+      tags: [System Control]
+      summary: "Запросить изменение числа воркеров (автоскейлинг или ручное управление)"
+      operationId: adjustScale
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScalingRequest" }
+      responses:
+        "200": { description: "Масштабирование выполнено" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /system/repair:
+    post:
+      tags: [System Control]
+      summary: "Запуск процедур самовосстановления (перезапуск зависших воркеров, сброс circuit breaker'ов, очистка dead letter)"
+      operationId: selfRepair
+      responses:
+        "200": { description: "Процедура запущена", content: { application/json: { schema: { type: object, properties: { repairs: { type: array, items: { type: string } } } } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "JWT access-токен, полученный через /auth/login"
+
+  schemas:
+    StartSessionRequest:
+      type: object
+      required: [url]
+      properties:
+        url: { type: string, format: uri, example: "https://example.com" }
+        depth: { type: integer, default: 2, minimum: 0, maximum: 10 }
+        tags: { type: array, items: { type: string }, maxItems: 20 }
+        proxyEnabled: { type: boolean, default: false }
+        javascriptEnabled: { type: boolean, default: false }
+
+    Session:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [pending, running, paused, completed, failed, cancelled] }
+        startUrl: { type: string, format: uri }
+        depth: { type: integer }
+        urlsCrawled: { type: integer }
+        emailsFound: { type: integer }
+        createdAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        errorMessage: { type: string }
+
+    Email:
+      type: object
+      required: [id, email, sourceUrl, tags]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, pattern: '^\S+@\S+\.\S+$' }
+        sourceUrl: { type: string, format: uri }
+        tags: { type: array, items: { type: string } }
+        confidence: { type: number }
+        verified: { type: boolean }
+        context: { type: string }
+        lastSeen: { type: string, format: date-time }
+
+    EmailList:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: "#/components/schemas/Email" } }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+
+    ExportRequest:
+      type: object
+      required: [format]
+      properties:
+        format: { type: string, enum: [json, csv, xlsx] }
+        filter: { $ref: "#/components/schemas/EmailFilter" }
+        fields: { type: array, items: { type: string }, example: ["email", "sourceUrl", "confidence"] }
+
+    EmailFilter:
+      type: object
+      properties:
+        tags: { type: array, items: { type: string } }
+        verified: { type: boolean }
+        confidence_min: { type: number }
+        date_from: { type: string, format: date-time }
+        date_to: { type: string, format: date-time }
+
+    CaptchaSolveRequest:
+      type: object
+      required: [sessionId, token]
+      properties:
+        sessionId: { type: string, format: uuid }
+        token: { type: string, description: "Токен решения CAPTCHA" }
+
+    ProxyPoolStatus:
+      type: object
+      properties:
+        total: { type: integer }
+        active: { type: integer }
+        quarantined: { type: integer }
+        lastFetch: { type: string, format: date-time }
+
+    WorkerStatus:
+      type: object
+      properties:
+        workerId: { type: string }
+        status: { type: string, enum: [idle, busy, draining, dead] }
+        cpu: { type: number }
+        ram: { type: number }
+        currentTask: { type: string, format: uuid }
+        uptime: { type: number }
+
+    CircuitBreakerStatus:
+      type: object
+      properties:
+        module: { type: string }
+        state: { type: string, enum: [closed, open, half-open] }
+        failures: { type: integer }
+        threshold: { type: integer }
+
+    AuditEntry:
+      type: object
+      properties:
+        eventId: { type: string, format: uuid }
+        action: { type: string }
+        actor: { type: string }
+        timestamp: { type: string, format: date-time }
+        outcome: { type: string, enum: [success, failure, denied] }
+
+    HealthResponse:
+      type: object
+      properties:
+        status: { type: string, enum: [healthy, degraded, unhealthy] }
+        uptime: { type: number }
+        pool: { $ref: "#/components/schemas/PoolMetrics" }
+        circuitBreaker: { type: string, example: "all_closed" }
+
+    PoolMetrics:
+      type: object
+      properties:
+        size: { type: integer }
+        available: { type: integer }
+        waiting: { type: integer }
+        max: { type: integer }
+        utilization: { type: number }
+
+    TokenResponse:
+      type: object
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        expiresIn: { type: integer, description: "Время жизни access-токена в секундах" }
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string, format: password }
+
+    SuccessResponse:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: "ERR_PROXY_FAILED" }
+        message: { type: string }
+        details: { type: object }
+
+    ModelInfo:
+      type: object
+      properties:
+        model_id: { type: string }
+        type: { type: string, enum: [priority_predictor, load_forecast, anomaly_detector, email_quality, dedup_embedding, rl_controller] }
+        version: { type: string }
+        status: { type: string, enum: [active, training, stale, error] }
+        accuracy: { type: number }
+        lastTrained: { type: string, format: date-time }
+        samples: { type: integer }
+
+    PredictionRequest:
+      type: object
+      required: [features]
+      properties:
+        features: { type: object }
+        request_id: { type: string, format: uuid }
+
+    PredictionResponse:
+      type: object
+      properties:
+        request_id: { type: string, format: uuid }
+        result: { type: object }
+        model_version: { type: string }
+
+    Experiment:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        status: { type: string, enum: [draft, running, stopped, completed] }
+        variants: { type: array, items: { $ref: "#/components/schemas/ExperimentVariant" } }
+        startDate: { type: string, format: date-time }
+        endDate: { type: string, format: date-time }
+
+    ExperimentVariant:
+      type: object
+      properties:
+        name: { type: string }
+        weight: { type: number }
+        config: { type: object }
+
+    CreateExperimentRequest:
+      type: object
+      required: [name, variants]
+      properties:
+        name: { type: string }
+        variants: { type: array, items: { $ref: "#/components/schemas/ExperimentVariant" } }
+
+    FeedbackMessage:
+      type: object
+      required: [context, reward, metadata]
+      properties:
+        context: { type: object, description: "Состояние, в котором система выбрала действие" }
+        action: { type: object, description: "Предпринятое системой действие" }
+        reward: { type: number, description: "Числовая награда" }
+        metadata: { type: object, description: "Любые дополнительные данные" }
+
+    ScalingRequest:
+      type: object
+      required: [target]
+      properties:
+        target: { type: string, enum: [high_queue, medium_queue, low_queue, web_crawler, browser_crawler, ml_inference] }
+        desired_workers: { type: integer, minimum: 0, maximum: 100 }
+
+  responses:
+    BadRequest:
+      description: "Неверный запрос"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Unauthorized:
+      description: "Не авторизован"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Forbidden:
+      description: "Доступ запрещён"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    NotFound:
+      description: "Не найдено"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    TooManyRequests:
+      description: "Слишком много запросов"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+      headers:
+        Retry-After:
+          description: "Задержка в секундах"
+          schema: { type: integer }

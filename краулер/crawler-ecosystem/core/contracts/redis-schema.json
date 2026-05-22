@@ -1,0 +1,405 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neural-crawler.tech/contracts/redis-schema/v2.2.0-core",
+  "title": "Neural Crawler Ecosystem — Redis Substrate (Canonical Contract)",
+  "description": "Фундаментальный контракт Redis-слоя. Каждая очередь, ключ и схема сообщения определены с предельной точностью, исключающей любую несовместимость. Все модули общаются только через этот контракт.",
+  "version": "2.2.0",
+  "stability": "production",
+  "maintainers": ["core@neural-crawler.tech"],
+  "lastModified": "2026-05-06T00:00:00Z",
+
+  "streams": {
+    "crawler:tasks:high": {
+      "description": "Высокоприоритетные задачи (сессии, капчи, срочное). Немедленное выполнение.",
+      "maxlen": 10000,
+      "maxlen_policy": "trim_oldest",
+      "ttl_seconds": 3600,
+      "consumer_group": "crawler-group",
+      "consumer_group_config": {
+        "max_consumers": 50,
+        "min_idle_time_ms": 30000,
+        "claim_timeout_ms": 60000
+      },
+      "message_schema": "TaskMessage",
+      "priority": 1,
+      "retry_strategy": {
+        "max_retries": 5,
+        "backoff": "exponential_jitter",
+        "base_delay_ms": 1000,
+        "max_delay_ms": 60000,
+        "dead_letter_stream": "dead:letter:tasks"
+      },
+      "monitoring": {
+        "alert_threshold_pending": 500,
+        "alert_threshold_critical": 1000,
+        "alert_threshold_oldest_msg_sec": 300
+      }
+    },
+    "crawler:tasks:medium": {
+      "description": "Среднеприоритетные задачи (обычный обход, фоновая разведка).",
+      "maxlen": 10000,
+      "maxlen_policy": "trim_oldest",
+      "ttl_seconds": 3600,
+      "consumer_group": "crawler-group",
+      "consumer_group_config": {
+        "max_consumers": 50,
+        "min_idle_time_ms": 60000,
+        "claim_timeout_ms": 120000
+      },
+      "message_schema": "TaskMessage",
+      "priority": 2,
+      "retry_strategy": {
+        "max_retries": 5,
+        "backoff": "exponential_jitter",
+        "base_delay_ms": 2000,
+        "max_delay_ms": 120000,
+        "dead_letter_stream": "dead:letter:tasks"
+      },
+      "monitoring": {
+        "alert_threshold_pending": 1000,
+        "alert_threshold_critical": 5000,
+        "alert_threshold_oldest_msg_sec": 600
+      }
+    },
+    "crawler:tasks:low": {
+      "description": "Низкоприоритетные задачи (глубокий переобход, архивные URL).",
+      "maxlen": 10000,
+      "maxlen_policy": "trim_oldest",
+      "ttl_seconds": 3600,
+      "consumer_group": "crawler-group",
+      "consumer_group_config": {
+        "max_consumers": 30,
+        "min_idle_time_ms": 120000,
+        "claim_timeout_ms": 300000
+      },
+      "message_schema": "TaskMessage",
+      "priority": 3,
+      "retry_strategy": {
+        "max_retries": 3,
+        "backoff": "exponential_jitter",
+        "base_delay_ms": 5000,
+        "max_delay_ms": 300000,
+        "dead_letter_stream": "dead:letter:tasks"
+      },
+      "monitoring": {
+        "alert_threshold_pending": 5000,
+        "alert_threshold_critical": 10000,
+        "alert_threshold_oldest_msg_sec": 1800
+      }
+    },
+    "harvest:emails": {
+      "description": "Поток найденных email. Подписчики: collector, mailer, ws-notifier, analytics.",
+      "maxlen": 50000,
+      "maxlen_policy": "trim_oldest",
+      "ttl_seconds": 7200,
+      "consumer_group": "collector-group",
+      "consumer_group_config": {
+        "max_consumers": 10,
+        "min_idle_time_ms": 10000,
+        "claim_timeout_ms": 30000
+      },
+      "message_schema": "EmailHarvestMessage",
+      "deduplication": {
+        "enabled": true,
+        "key_pattern": "email:dedup:{sha256(email)}",
+        "window_seconds": 86400
+      },
+      "monitoring": {
+        "alert_threshold_rate_per_min": 1000,
+        "alert_threshold_duplicate_ratio": 0.3,
+        "alert_threshold_invalid_ratio": 0.1
+      }
+    },
+    "audit:events": {
+      "description": "WORM-аудит всех действий системы.",
+      "maxlen": 100000,
+      "maxlen_policy": "trim_oldest",
+      "ttl_seconds": 86400,
+      "consumer_group": "audit-group",
+      "message_schema": "AuditMessage",
+      "worm": {
+        "enabled": true,
+        "hash_chain": true,
+        "hash_algorithm": "SHA-256",
+        "verification_endpoint": "/api/audit/verify-chain"
+      }
+    },
+    "dead:letter:tasks": {
+      "description": "Задачи, исчерпавшие все попытки. Ручное разрешение.",
+      "maxlen": 5000,
+      "maxlen_policy": "reject_new",
+      "ttl_seconds": 604800,
+      "consumer_group": "dead-letter-group",
+      "message_schema": "DeadLetterMessage"
+    },
+    "notifications:push": {
+      "description": "Быстрые push-уведомления для WebSocket-релея.",
+      "maxlen": 1000,
+      "maxlen_policy": "trim_oldest",
+      "ttl_seconds": 300,
+      "message_schema": "PushNotificationMessage"
+    }
+  },
+
+  "pubsub": {
+    "channels": {
+      "system:config": { "description": "Изменение активной конфигурации." },
+      "system:shutdown": { "description": "Graceful shutdown с ожиданием." },
+      "proxy:pool:update": { "description": "Обновление пула прокси." },
+      "proxy:pool:depleted": { "description": "Критическое падение числа прокси." },
+      "session:status": { "description": "Изменение статуса сессии." },
+      "worker:heartbeat": { "description": "Пульс воркера (TTL 30s)." },
+      "worker:status": { "description": "Детальный статус воркера." },
+      "circuit:breaker": { "description": "Изменение состояния circuit breaker." },
+      "metrics:snapshot": { "description": "Агрегированные метрики." },
+      "alert:triggered": { "description": "Срабатывание алерта." }
+    }
+  },
+
+  "keys": {
+    "patterns": {
+      "session:{sessionId}": {
+        "type": "hash",
+        "ttl_seconds": 3600,
+        "fields": {
+          "status": { "type": "string", "enum": ["pending", "running", "paused", "completed", "failed", "cancelled"] },
+          "startUrl": { "type": "string", "format": "uri" },
+          "depth": { "type": "integer" },
+          "urlsCrawled": { "type": "integer" },
+          "emailsFound": { "type": "integer" },
+          "totalTimeMs": { "type": "integer" },
+          "errorMessage": { "type": "string" },
+          "userId": { "type": "string" }
+        }
+      },
+      "proxy:pool": { "type": "set", "ttl_seconds": -1 },
+      "proxy:quarantine": { "type": "set", "ttl_seconds": 1800 },
+      "proxy:scores:{ip}": {
+        "type": "hash",
+        "ttl_seconds": 3600,
+        "fields": {
+          "successCount": { "type": "integer" },
+          "failCount": { "type": "integer" },
+          "score": { "type": "number" }
+        }
+      },
+      "rate:{module}:{identifier}": { "type": "string", "ttl_seconds": 60 },
+      "email:dedup:{email_hash}": { "type": "string", "ttl_seconds": 86400 },
+      "emails:list:{query_hash}": { "type": "string", "ttl_seconds": 300 },
+      "config:active": { "type": "hash", "ttl_seconds": -1 },
+      "config:history": { "type": "list", "maxlen": 100 },
+      "locks:crawl:{url_hash}": { "type": "string", "ttl_seconds": 300 },
+      "locks:session:{sessionId}": { "type": "string", "ttl_seconds": 30 },
+      "circuit:state:{module}": {
+        "type": "hash",
+        "ttl_seconds": -1,
+        "fields": {
+          "state": { "type": "string", "enum": ["closed", "open", "half-open"] },
+          "failures": { "type": "integer" },
+          "openedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "metrics:buffer:10s": { "type": "list", "maxlen": 1000, "ttl_seconds": 120 },
+      "metrics:buffer:1m": { "type": "list", "maxlen": 1000, "ttl_seconds": 300 },
+      "health:module:{module}": {
+        "type": "hash",
+        "ttl_seconds": 60,
+        "fields": {
+          "status": { "type": "string", "enum": ["healthy", "degraded", "unhealthy"] },
+          "lastSeen": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  },
+
+  "schemas": {
+    "TaskMessage": {
+      "$id": "#/schemas/TaskMessage",
+      "type": "object",
+      "required": ["url", "sessionId", "depth", "priority"],
+      "properties": {
+        "url": { "type": "string", "format": "uri", "maxLength": 2048 },
+        "sessionId": { "type": "string", "format": "uuid" },
+        "depth": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "priority": { "type": "string", "enum": ["high", "medium", "low"] },
+        "retryCount": { "type": "integer", "minimum": 0, "maximum": 5, "default": 0 },
+        "parentUrl": { "type": "string", "format": "uri" },
+        "tags": { "type": "array", "items": { "type": "string" }, "maxItems": 20 },
+        "proxyRequired": { "type": "boolean", "default": false },
+        "javascriptRequired": { "type": "boolean", "default": false },
+        "maxRedirects": { "type": "integer", "minimum": 0, "maximum": 10, "default": 3 },
+        "timeout": { "type": "integer", "minimum": 1000, "maximum": 60000, "default": 30000 },
+        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+        "cookies": { "type": "array", "items": { "type": "object" } },
+        "profileId": { "type": "string", "format": "uuid" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "idempotencyKey": { "type": "string", "format": "uuid" },
+        "scheduledFor": { "type": "string", "format": "date-time" },
+        "plugins": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "EmailHarvestMessage": {
+      "$id": "#/schemas/EmailHarvestMessage",
+      "type": "object",
+      "required": ["email", "sourceUrl", "tags"],
+      "properties": {
+        "email": {
+          "type": "string",
+          "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",
+          "maxLength": 320
+        },
+        "sourceUrl": { "type": "string", "format": "uri" },
+        "tags": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "context": { "type": "string", "maxLength": 5000 },
+        "foundAt": { "type": "string", "format": "date-time" },
+        "sessionId": { "type": "string", "format": "uuid" },
+        "method": { "type": "string" },
+        "metadata": { "type": "object" },
+        "verified": { "type": "boolean", "default": false },
+        "hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      },
+      "additionalProperties": false
+    },
+    "AuditMessage": {
+      "$id": "#/schemas/AuditMessage",
+      "type": "object",
+      "required": ["eventId", "action", "actor", "timestamp"],
+      "properties": {
+        "eventId": { "type": "string", "format": "uuid" },
+        "action": { "type": "string" },
+        "actor": { "type": "string" },
+        "actorRole": { "type": "string" },
+        "target": { "type": "string" },
+        "ip": { "type": "string", "format": "ipv4" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "outcome": { "type": "string", "enum": ["success", "failure", "denied"] },
+        "prevHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      },
+      "additionalProperties": false
+    },
+    "DeadLetterMessage": {
+      "$id": "#/schemas/DeadLetterMessage",
+      "type": "object",
+      "required": ["originalTask", "errorHistory"],
+      "properties": {
+        "originalTask": { "$ref": "#/schemas/TaskMessage" },
+        "errorHistory": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attempt": { "type": "integer" },
+              "error": { "type": "string" },
+              "timestamp": { "type": "string", "format": "date-time" }
+            }
+          }
+        },
+        "classification": { "type": "string", "enum": ["retryable", "fatal", "unknown"] }
+      }
+    },
+    "PushNotificationMessage": {
+      "$id": "#/schemas/PushNotificationMessage",
+      "type": "object",
+      "required": ["type", "payload", "timestamp"],
+      "properties": {
+        "type": { "type": "string" },
+        "payload": { "type": "object" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "sessionId": { "type": "string", "format": "uuid" },
+        "severity": { "type": "string", "enum": ["info", "warning", "critical"] }
+      }
+    },
+    "SessionStatusMessage": {
+      "$id": "#/schemas/SessionStatusMessage",
+      "type": "object",
+      "required": ["sessionId", "status", "timestamp"],
+      "properties": {
+        "sessionId": { "type": "string", "format": "uuid" },
+        "status": { "type": "string", "enum": ["pending", "running", "paused", "completed", "failed", "cancelled"] },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "reason": { "type": "string" }
+      }
+    },
+    "WorkerHeartbeatMessage": {
+      "$id": "#/schemas/WorkerHeartbeatMessage",
+      "type": "object",
+      "required": ["workerId", "timestamp"],
+      "properties": {
+        "workerId": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "currentTask": { "type": "string" }
+      }
+    },
+    "WorkerStatusMessage": {
+      "$id": "#/schemas/WorkerStatusMessage",
+      "type": "object",
+      "required": ["workerId", "timestamp", "status"],
+      "properties": {
+        "workerId": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["idle", "busy", "draining", "dead"] },
+        "cpu": { "type": "number" },
+        "ram": { "type": "number" },
+        "tasksCompleted": { "type": "integer" }
+      }
+    },
+    "CircuitBreakerMessage": {
+      "$id": "#/schemas/CircuitBreakerMessage",
+      "type": "object",
+      "required": ["module", "state", "timestamp"],
+      "properties": {
+        "module": { "type": "string" },
+        "state": { "type": "string", "enum": ["closed", "open", "half-open"] },
+        "failures": { "type": "integer" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      }
+    },
+    "MetricsSnapshotMessage": {
+      "$id": "#/schemas/MetricsSnapshotMessage",
+      "type": "object",
+      "required": ["timestamp", "metrics"],
+      "properties": {
+        "timestamp": { "type": "string", "format": "date-time" },
+        "window": { "type": "string", "enum": ["10s", "1m"] },
+        "metrics": {
+          "type": "object",
+          "properties": {
+            "tasks_high_pending": { "type": "integer" },
+            "tasks_medium_pending": { "type": "integer" },
+            "tasks_low_pending": { "type": "integer" },
+            "emails_found": { "type": "integer" },
+            "proxies_active": { "type": "integer" },
+            "cpu_percent": { "type": "number" }
+          }
+        }
+      }
+    },
+    "AlertTriggeredMessage": {
+      "$id": "#/schemas/AlertTriggeredMessage",
+      "type": "object",
+      "required": ["alertId", "rule", "severity", "timestamp"],
+      "properties": {
+        "alertId": { "type": "string", "format": "uuid" },
+        "rule": { "type": "string" },
+        "severity": { "type": "string", "enum": ["info", "warning", "critical"] },
+        "message": { "type": "string" },
+        "value": { "type": "number" },
+        "threshold": { "type": "number" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      }
+    },
+    "ConfigUpdateMessage": {
+      "$id": "#/schemas/ConfigUpdateMessage",
+      "type": "object",
+      "required": ["version", "updatedAt"],
+      "properties": {
+        "version": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "changes": { "type": "array", "items": { "type": "object" } }
+      }
+    }
+  }
+}

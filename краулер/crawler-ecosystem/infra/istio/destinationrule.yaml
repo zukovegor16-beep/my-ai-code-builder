@@ -1,0 +1,135 @@
+# =============================================================================
+# File: infra/istio/# =============================================================================
+# File: infra/istio/destinationrule.yaml
+# Defines traffic policies, load balancing, and connection pools.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# DestinationRule for the API service
+# ---------------------------------------------------------------------------
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: api-dr
+  namespace: crawler
+spec:
+  host: crawler-api
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 10000
+      http:
+        http2MaxRequests: 10000
+        maxRequestsPerConnection: 1000
+    loadBalancer:
+      simple: LEAST_REQUEST
+    outlierDetection:
+      consecutive5xxErrors: 7
+      interval: 5m
+      baseEjectionTime: 15m
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+    tls:
+      mode: ISTIO_MUTUAL
+
+# ---------------------------------------------------------------------------
+# DestinationRule for the Worker service (if exposed)
+# ---------------------------------------------------------------------------
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: worker-dr
+  namespace: crawler
+spec:
+  host: crawler-worker
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 5000
+    loadBalancer:
+      simple: ROUND_ROBIN
+    tls:
+      mode: ISTIO_MUTUAL
+
+# ---------------------------------------------------------------------------
+# DestinationRule for external services (WHOIS, GitHub, etc.)
+# ---------------------------------------------------------------------------
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: external-services-dr
+  namespace: crawler
+spec:
+  host: "*"
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 1000
+    tls:
+      mode: DISABLE   # external services may not support mTLS
+# Defines traffic policies, load balancing, and connection pools.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# DestinationRule for the API service
+# ---------------------------------------------------------------------------
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: api-dr
+  namespace: crawler
+spec:
+  host: crawler-api
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 10000
+      http:
+        http2MaxRequests: 10000
+        maxRequestsPerConnection: 1000
+    loadBalancer:
+      simple: LEAST_REQUEST
+    outlierDetection:
+      consecutive5xxErrors: 7
+      interval: 5m
+      baseEjectionTime: 15m
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+    tls:
+      mode: ISTIO_MUTUAL
+
+# ---------------------------------------------------------------------------
+# DestinationRule for the Worker service (if exposed)
+# ---------------------------------------------------------------------------
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: worker-dr
+  namespace: crawler
+spec:
+  host: crawler-worker
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 5000
+    loadBalancer:
+      simple: ROUND_ROBIN
+    tls:
+      mode: ISTIO_MUTUAL
+
+# ---------------------------------------------------------------------------
+# DestinationRule for external services (WHOIS, GitHub, etc.)
+# ---------------------------------------------------------------------------
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: external-services-dr
+  namespace: crawler
+spec:
+  host: "*"
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 1000
+    tls:
+      mode: DISABLE   # external services may not support mTLS

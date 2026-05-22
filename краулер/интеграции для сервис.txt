@@ -1,0 +1,32 @@
+const { create: createSentientMiddleware } = require('./middleware/sentient');
+const { middleware: sentientMw, destroy: destroySentient } = createSentientMiddleware({
+  db,
+  bus: db.bus,
+  options: { maxConcurrent: 800 }
+});
+app.use(sentientMw);
+
+// При graceful shutdown:
+await destroySentient();
+
+
+
+
+const { createSentientObserver } = require('../core/monitoring/sentient-observer');
+
+const observer = createSentientObserver({
+  sentientCore: gatewaySentient,
+  prometheusUrl: process.env.PROMETHEUS_URL || 'http://localhost:9090',
+  alertmanagerUrl: process.env.ALERTMANAGER_URL,
+  grafanaUrl: process.env.GRAFANA_URL,
+});
+
+observer.on('anomaly_predicted', (anomaly) => {
+  logEvent('warn', 'Observer anomaly predicted', anomaly);
+});
+
+await observer.start();
+await observer.provisionGrafanaDashboard();
+
+// При остановке:
+await observer.stop();

@@ -1,0 +1,156 @@
+# =============================================================================
+# Ansible Playbook: install-k3s.yml
+# File: infra/ansible/playbooks/install-k3s.yml
+# =============================================================================
+
+- name: Prepare all nodes
+  hosts: all
+  become: yes
+  tasks:
+    - name: Update apt cache and upgrade packages
+      apt:
+        update_cache: yes
+        upgrade: dist
+
+    - name: Install essential packages
+      apt:
+        name:
+          - curl
+          - wget
+          - gnupg
+          - ca-certificates
+          - lsb-release
+          - software-properties-common
+          - net-tools
+          - jq
+          - nfs-common
+          - python3-pip
+        state: present
+
+    - name: Disable swap
+      shell: swapoff -a
+      when: ansible_swaptotal_mb > 0
+
+    - name: Remove swap from fstab
+      mount:
+        name: swap
+        fstype: swap
+        state: absent
+
+    - name: Set kernel parameters for Kubernetes
+      copy:
+        dest: /etc/sysctl.d/99-kubernetes-cri.conf
+        content: |
+          net.bridge.bridge-nf-call-iptables  = 1
+          net.ipv4.ip_forward                 = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+      notify: apply sysctl
+
+  handlers:
+    - name: apply sysctl
+      command: sysctl --system
+
+- name: Install K3s on master nodes
+  hosts: masters
+  become: yes
+  serial: 1
+  vars:
+    first_master_ip: "10.0.1.10"
+  tasks:
+    - name: Download and install K3s on first master
+      shell: |
+        curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server \
+          --cluster-init \
+          --token {{ cluster_token }} \
+          --node-taint CriticalAddonsOnly=true:NoExecute \
+          --disable servicelb \
+          --disable traefik \
+          --write-kubeconfig-mode 644 \
+          --flannel-backend=wireguard-native \
+          --data-dir=/var/lib/rancher/k3s/data" \
+        sh -
+      when: ansible_host == first_master_ip
+
+    - name: Download and install K3s on other masters
+      shell: |
+        curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server \
+          --server https://{{ first_master_ip }}:6443 \
+          --token {{ cluster_token }} \
+          --node-taint CriticalAddonsOnly=true:NoExecute \
+          --disable servicelb \
+          --disable traefik \
+          --write-kubeconfig-mode 644 \
+          --flannel-backend=wireguard-native \
+          --data-dir=/var/lib/rancher/k3s/data" \
+        sh -
+      when: ansible_host != first_master_ip
+
+    - name: Ensure kubeconfig is available
+      copy:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: /home/ubuntu/.kube/config
+        remote_src: yes
+        owner: ubuntu
+        group: ubuntu
+
+    - name: Wait for node to be Ready
+      command: k3s kubectl get node {{ inventory_hostname }} -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+      register: node_status
+      until: node_status.stdout == 'True'
+      retries: 30
+      delay: 10
+
+- name: Install K3s agent on worker nodes
+  hosts: workers:gpu_workers
+  become: yes
+  serial: 1
+  tasks:
+    - name: Join worker to cluster
+      shell: |
+        curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="agent \
+          --server https://{{ master_ip }}:6443 \
+          --token {{ cluster_token }} \
+          --data-dir=/var/lib/rancher/k3s/data" \
+        sh -
+
+    - name: Wait for worker node to be Ready
+      command: k3s kubectl get node {{ inventory_hostname }} -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+      register: node_status
+      until: node_status.stdout == 'True'
+      retries: 30
+      delay: 10
+
+- name: Install NVIDIA drivers on GPU workers
+  hosts: gpu_workers
+  become: yes
+  tasks:
+    - name: Add NVIDIA package repositories
+      shell: |
+        curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | apt-key add -
+        distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
+        curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | tee /etc/apt/sources.list.d/nvidia-docker.list
+      args:
+        executable: /bin/bash
+
+    - name: Install NVIDIA driver and container toolkit
+      apt:
+        name:
+          - nvidia-driver-535
+          - nvidia-container-toolkit
+        state: present
+        update_cache: yes
+
+    - name: Restart containerd (to pick up GPU runtime)
+      systemd:
+        name: containerd
+        state: restarted
+
+- name: Save kubeconfig locally
+  hosts: masters[0]
+  become: no
+  tasks:
+    - name: Fetch kubeconfig
+      fetch:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: "{{ playbook_dir }}/../kubeconfig/k3s.yaml"
+        flat: yes

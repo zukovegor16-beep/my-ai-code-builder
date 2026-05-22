@@ -1,0 +1,133 @@
+# =============================================================================
+# Part 8 — Helm Chart for Databases (PostgreSQL + MinIO + KeyDB + Meilisearch)
+# =============================================================================
+# File: infra/helm-charts/databases/values.yaml (continued)
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# KeyDB (High-Performance Redis Fork) with Sentinel
+# ---------------------------------------------------------------------------
+keydb:
+  enabled: true
+  architecture: replication
+  auth:
+    enabled: true
+    password: "super_strong_password"   # store in Vault!
+  master:
+    persistence:
+      enabled: true
+      size: 10Gi
+      storageClass: local-path
+    resources:
+      requests:
+        memory: 1Gi
+        cpu: 500m
+      limits:
+        memory: 2Gi
+        cpu: 1000m
+  replica:
+    replicaCount: 2
+    persistence:
+      enabled: true
+      size: 10Gi
+      storageClass: local-path
+    resources:
+      requests:
+        memory: 1Gi
+        cpu: 500m
+      limits:
+        memory: 2Gi
+        cpu: 1000m
+  sentinel:
+    enabled: true
+    quorum: 2
+    resources:
+      requests:
+        memory: 128Mi
+        cpu: 100m
+      limits:
+        memory: 256Mi
+        cpu: 200m
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      interval: 30s
+  config:
+    maxmemory: 2gb
+    maxmemory-policy: allkeys-lru
+    appendfsync: everysec
+    auto-aof-rewrite-percentage: 100
+    auto-aof-rewrite-min-size: 64mb
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app
+                  operator: In
+                  values: ["keydb"]
+            topologyKey: kubernetes.io/hostname
+
+# ---------------------------------------------------------------------------
+# Meilisearch (Fast, typo-tolerant full-text search)
+# ---------------------------------------------------------------------------
+meilisearch:
+  enabled: true
+  masterKey: "meili_master_key"       # store in Vault
+  replicaCount: 2
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: local-path
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 250m
+    limits:
+      memory: 2Gi
+      cpu: 1000m
+  env:
+    MEILI_HTTP_ADDR: "0.0.0.0:7700"
+    MEILI_NO_ANALYTICS: "true"
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      interval: 30s
+  # Pre-create indices at startup
+  startupProbe:
+    exec:
+      command:
+        - sh
+        - -c
+        - |
+          sleep 15
+          curl -X POST 'http://localhost:7700/indexes' \
+            -H 'Authorization: Bearer ${MEILI_MASTER_KEY}' \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "uid": "emails",
+              "primaryKey": "email"
+            }'
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app
+                  operator: In
+                  values: ["meilisearch"]
+            topologyKey: kubernetes.io/hostname
+
+# ---------------------------------------------------------------------------
+# Global settings (repeated for clarity)
+# ---------------------------------------------------------------------------
+global:
+  storageClass: local-path
+  imagePullSecrets:
+    - name: dockercred

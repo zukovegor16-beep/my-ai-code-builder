@@ -1,0 +1,284 @@
+```markdown
+# Neural Crawler Ecosystem — Real-time Communication Contract v3.2
+
+**Полный спецификатор WebSocket‑взаимодействия для всех модулей экосистемы.**  
+Соединение шифровано (TLS), аутентифицировано (JWT), управляется ролевым доступом. Каждое сообщение строго типизировано и валидируется сервером. Протокол поддерживает самооптимизацию: клиенты подписываются на фильтрованные потоки, сервер управляет обратным давлением и очищает «мёртвые» подписки.
+
+---
+
+## 1. Базовая структура сообщения (Envelope)
+
+Любое сообщение, отправляемое сервером или клиентом, обёрнуто в единый конверт:
+
+```json
+{
+  "type": "string",
+  "version": "3.2",
+  "id": "uuid",
+  "timestamp": "ISO8601",
+  "traceId": "uuid",
+  "sessionId": "uuid | null",
+  "payload": { ... }
+}
+```
+
+| Поле        | Тип               | Обязательность | Назначение |
+|-------------|-------------------|---------------|------------|
+| `type`      | string            | да            | Тип события (полный список в §9) |
+| `version`   | string            | да            | Версия протокола (`"3.2"`) |
+| `id`        | uuid              | да            | Глобально уникальный идентификатор сообщения для дедупликации |
+| `timestamp` | ISO 8601          | да            | Время генерации сообщения сервером |
+| `traceId`   | uuid              | да            | Сквозной идентификатор для цепочки событий одной транзакции |
+| `sessionId` | uuid / null       | нет           | Привязка к сессии краулинга (если применимо) |
+| `payload`   | object            | да            | Специфичные для типа данные (строго по схемам из §9) |
+
+---
+
+## 2. Аутентификация и открытие соединения
+
+- **URL подключения**: `wss://api.neural-crawler.tech/ws` (dev: `ws://localhost:3000/ws`)
+- **JWT access‑токен** передаётся одним из способов (приоритет по порядку):
+  1. query‑параметр `?token=eyJ...`
+  2. заголовок `Authorization: Bearer eyJ...` во время handshake
+- Сервер извлекает из токена `userId`, `role` (`admin`, `operator`, `viewer`, `system`) и `permissions`.
+- При невалидном токене → код закрытия `4401` и дисконнект.
+- При отсутствии токена → таймаут 5 секунд, затем закрытие `4401`.
+
+---
+
+## 3. Heartbeat (контроль жизнеспособности)
+
+- Сервер → клиент: `{ "type": "ping", "timestamp": "…" }` каждые **30 с**.
+- Клиент обязан ответить `{ "type": "pong", "timestamp": "…" }` в течение **10 с**.
+- Не получен `pong` → сервер закрывает соединение с кодом `4408`.
+- Клиент не видит `ping` **45 с** → считает канал мёртвым и переподключается.
+- Плавная остановка: сервер отправляет `{ "type": "server_shutdown", "drain_timeout_seconds": 30 }` и ждёт указанное время.
+
+---
+
+## 4. Политика переподключения (Reconnection)
+
+Клиент использует экспоненциальную задержку с джиттером:
+
+| Попытка | Задержка |
+|---------|----------|
+| 1       | 1 с      |
+| 2       | 2 с      |
+| 3       | 4 с      |
+| 4       | 8 с      |
+| 5       | 16 с     |
+| 6+      | 30 с     |
+
+После успешного подключения сервер досылает пропущенные события из буфера не старше **5 минут** (TTL буфера). Если `userId` и `sessionId` совпадают с предыдущей сессией, буфер восстанавливается полностью, иначе — только глобальные события.
+
+---
+
+## 5. Подписка и фильтрация (Subscription Management)
+
+Сразу после установки соединения клиент может отправить фильтр:
+
+```json
+{
+  "type": "subscribe",
+  "events": ["email_found", "session_progress"],
+  "aggregation": { "email_found": { "batch_size": 5, "interval_ms": 1000 } },
+  "qos": 1
+}
+```
+
+- `events` – массив типов или `"*"` (все).
+- `aggregation` – запрос на пакетирование (сервер будет слать `email_batch_found` вместо роя одиночных).
+- `qos` – `0` (at most once), `1` (at least once с подтверждением `ack`).
+
+Сервер подтверждает:
+
+```json
+{ "type": "subscribed", "events": ["email_found", "session_progress"] }
+```
+
+Фильтр можно изменить повторной отправкой `subscribe`.
+
+---
+
+## 6. Обратное давление и адаптивная пропускная способность
+
+Сервер следит за заполнением выходного буфера клиента. При переполнении:
+
+```json
+{ "type": "slow_down", "delay_ms": 500 }
+```
+
+Если клиент не снижает потребление, сервер может принудительно включить агрегацию или отключить клиента (`4300`).  
+Клиент может и сам запросить снижение темпа:
+
+```json
+{ "type": "throttle", "max_per_second": 10 }
+```
+
+Сервер отвечает `throttle_ack`.
+
+---
+
+## 7. Двусторонние вызовы (Client → Server)
+
+Клиент отправляет команды в том же конверте. Поддерживаемые типы:
+
+- `command` – полезная нагрузка содержит `command` (строка) и специфичные параметры.
+- `client_feedback` – обратная связь для reinforcement learning.
+- `solve_captcha` – решение CAPTCHA.
+- `prediction_request` – запрос к ML‑модели.
+- `ack` – подтверждение получения события (qos=1).
+
+Сервер на команды отвечает `command_ack` или `error`.
+
+**Стандартные команды** (поле `command`):
+- `pause_session`, `resume_session`, `stop_session`
+- `scale_workers` (требует `target` и `desired_workers`)
+- `fetch_free_proxy`
+- `reset_circuit_breaker` (требует `module`)
+- `self_repair`
+- `retrain_model` (требует `model_id`)
+
+Доступ к командам регулируется ролями (см. §11).
+
+---
+
+## 8. Сжатие и кэширование
+
+- Все текстовые сообщения: `permessage-deflate`.
+- Клиенты могут кэшировать статичные части payload (напр., информацию о моделях). При изменениях сервер рассылает `cache_invalidate`.
+
+---
+
+## 9. Каталог событий и строгие схемы payload
+
+Ниже перечислены все 28 типов. Для каждого приведена **полная JSON Schema** (2020‑12), которая должна использоваться сервером для валидации перед отправкой и при получении от клиента.
+
+### 9.1 Системные сообщения
+
+- `ping` / `pong` – только `timestamp`.
+- `server_shutdown` – `drain_timeout_seconds`.
+- `subscribe`, `subscribed`, `throttle`, `throttle_ack`, `slow_down`, `resume`.
+- `error` – `code`, `message`.
+
+### 9.2 События сессий
+
+`session_started`, `session_progress`, `session_stopped`, `session_error` – полные схемы, аналогичные описанным ранее, но с добавлением `traceId`.
+
+### 9.3 Email
+
+`email_found`, `email_batch_found` – batch содержит массив `email_found`.
+
+### 9.4 CAPTCHA
+
+`captcha_required`, `captcha_solved` – таймаут, тип капчи.
+
+### 9.5 Прокси
+
+`proxy_update`, `proxy_depleted`.
+
+### 9.6 Воркеры
+
+`worker_status` (массив объектов), `worker_heartbeat` (только для мониторинга), `worker_scaled`.
+
+### 9.7 Circuit Breaker
+
+`circuit_breaker_change`.
+
+### 9.8 Системные оповещения и аудит
+
+`system_alert` (severity, message, actions), `audit_event` (eventId, action, actor, outcome, ip).
+
+### 9.9 Мониторинг и метрики
+
+`metrics_snapshot` – агрегированные метрики за окно.
+
+### 9.10 ML / AI
+
+`model_updated`, `model_prediction`, `training_progress`, `ab_experiment_updated`.
+
+### 9.11 Обратная связь и управление
+
+`client_feedback`, `command_ack`, `cache_invalidate`.
+
+Все схемы являются неотъемлемой частью контракта; они хранятся в отдельных файлах `ws-schemas/*.json` и обязательны к проверке через AJV.
+
+---
+
+## 10. Интеграция с Redis
+
+WebSocket‑сервер подписывается на следующие каналы из `redis-schema.json`:
+
+| Redis канал          | Тип события WebSocket |
+|----------------------|-----------------------|
+| `notifications:push` | `email_found`, `email_batch_found`, `session_*` |
+| `session:status`     | `session_started`, `session_progress`, `session_stopped`, `session_error` |
+| `proxy:pool:update`  | `proxy_update` |
+| `proxy:pool:depleted`| `proxy_depleted` |
+| `worker:heartbeat`   | `worker_heartbeat` |
+| `worker:status`      | `worker_status` |
+| `circuit:breaker`    | `circuit_breaker_change` |
+| `metrics:snapshot`   | `metrics_snapshot` |
+| `alert:triggered`    | `system_alert` |
+| `ml:model_updated`   | `model_updated` |
+
+Команды от клиента пробрасываются в соответствующие потоки Redis (напр., `solve_captcha` → `crawler:tasks:high`, `scale_workers` → `system:scale`).
+
+---
+
+## 11. Безопасность и ролевой доступ
+
+Из JWT извлекаются `role` и `permissions`. Разграничение:
+
+- **viewer** – только чтение глобальных событий. Команды запрещены.
+- **operator** – управление сессиями, капчей, прокси.
+- **admin** – полный доступ, включая `scale_workers`, `reset_circuit_breaker`, `retrain_model`.
+- **system** – внутренний трафик, токен не требуется, только с доверенных IP.
+
+Все действия, изменяющие состояние, записываются в WORM‑канал `audit:events`.
+
+---
+
+## 12. Версионирование
+
+Текущая версия: `3.2`.  
+Сервер поддерживает клиентов версий 3.1 и 3.2 одновременно (graceful degradation) в течение 30 дней после выхода новой мажорной версии. Устаревшим клиентам высылается `protocol_upgrade_available`.
+
+---
+
+## 13. Масштабирование и федерация
+
+Несколько экземпляров WebSocket‑сервера объединяются через Redis Pub/Sub. Клиент подключается к любому узлу и получает единый поток событий. При необходимости шардирование выполняется по `sessionId` или `userId`.
+
+---
+
+## 14. Примеры диалогов
+
+**Подписка**  
+→ `{ "type": "subscribe", "events": ["email_found"] }`  
+← `{ "type": "subscribed", "events": ["email_found"] }`
+
+**Событие с QoS 1**  
+← `{ "type": "email_found", "id": "ev1", "payload": {...} }`  
+→ `{ "type": "ack", "id": "ev1" }`
+
+**Команда**  
+→ `{ "type": "command", "payload": { "command": "pause_session", "sessionId": "..." } }`  
+← `{ "type": "command_ack", "command": "pause_session", "status": "success" }`
+
+**Heartbeat**  
+← `{ "type": "ping", "timestamp": "..." }`  
+→ `{ "type": "pong", "timestamp": "..." }`
+
+---
+
+## 15. Рекомендации по реализации
+
+- Сервер обязан валидировать входящие сообщения через AJV с JSON Schema из §9.
+- Клиент должен игнорировать дубликаты по `id` в пределах 5‑минутного окна.
+- Максимальный размер payload: 1 МБ.
+- Рекомендуемый размер приёмного буфера клиента: не менее 100 сообщений.
+- При получении `slow_down` клиент обязан приостановить обработку на указанное время.
+
+---
+

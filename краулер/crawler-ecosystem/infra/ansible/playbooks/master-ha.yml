@@ -1,0 +1,105 @@
+# =============================================================================
+# Part 7 — Extended Ansible Playbooks for Master HA and Worker Join
+# =============================================================================
+
+# File: infra/ansible/playbooks/master-ha.yml
+# Purpose: Ensure master nodes form a highly available control plane,
+#          configure embedded etcd, and verify cluster health.
+# -----------------------------------------------------------------------------
+
+- name: Prepare master nodes for HA
+  hosts: masters
+  become: yes
+  gather_facts: yes
+  vars:
+    first_master_ip: "10.0.1.10"
+    k3s_data_dir: "/var/lib/rancher/k3s"
+  pre_tasks:
+    - name: Check required variables
+      fail:
+        msg: "cluster_token must be defined"
+      when: cluster_token is not defined or cluster_token | length == 0
+
+  tasks:
+    # --------------------------------------------------
+    # 1. Ensure first master is correctly installed
+    # --------------------------------------------------
+    - name: Verify first master installation
+      stat:
+        path: "/etc/rancher/k3s/k3s.yaml"
+      register: first_master_installed
+      when: ansible_host == first_master_ip
+
+    - name: Fail if first master not installed
+      fail:
+        msg: "First master ({{ first_master_ip }}) is not installed. Run base install first."
+      when: ansible_host == first_master_ip and not first_master_installed.stat.exists
+
+    # --------------------------------------------------
+    # 2. Ensure other masters can join the cluster
+    # --------------------------------------------------
+    - name: Retrieve k3s token from first master
+      slurp:
+        src: "/var/lib/rancher/k3s/server/node-token"
+      register: k3s_node_token
+      when: ansible_host == first_master_ip
+
+    - name: Distribute token to all masters
+      set_fact:
+        k3s_join_token: "{{ (k3s_node_token.content | b64decode).strip() }}"
+      when: k3s_node_token.content is defined
+
+    - name: Join additional masters
+      shell: |
+        curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server \
+          --server https://{{ first_master_ip }}:6443 \
+          --token {{ k3s_join_token }} \
+          --node-taint CriticalAddonsOnly=true:NoExecute \
+          --disable servicelb \
+          --disable traefik \
+          --write-kubeconfig-mode 644 \
+          --flannel-backend=wireguard-native \
+          --data-dir={{ k3s_data_dir }}/data" \
+        sh -
+      when: ansible_host != first_master_ip and k3s_join_token is defined
+
+    # --------------------------------------------------
+    # 3. Configure embedded etcd backups (optional)
+    # --------------------------------------------------
+    - name: Create etcd snapshot directory
+      file:
+        path: /var/lib/rancher/k3s/server/db/snapshots
+        state: directory
+        mode: '0700'
+
+    - name: Schedule etcd snapshots via cron
+      cron:
+        name: "k3s-etcd-snapshot"
+        minute: "0"
+        hour: "*/12"
+        job: "/usr/local/bin/k3s etcd-snapshot save --snapshot-compress"
+        user: root
+
+    # --------------------------------------------------
+    # 4. Verify cluster health
+    # --------------------------------------------------
+    - name: Wait for all master nodes to be Ready
+      shell: |
+        /usr/local/bin/k3s kubectl get nodes -l node-role.kubernetes.io/master \
+          -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}'
+      register: master_ready
+      until: "'True' in master_ready.stdout and 'False' not in master_ready.stdout"
+      retries: 60
+      delay: 5
+      ignore_errors: yes
+
+    - name: Check etcd health
+      command: /usr/local/bin/k3s etcd-snapshot status
+      register: etcd_health
+      failed_when: false
+
+    - name: Output cluster status
+      debug:
+        msg:
+          - "All master nodes: {{ master_ready.stdout }}"
+          - "Etcd snapshots: {{ etcd_health.stdout_lines }}"

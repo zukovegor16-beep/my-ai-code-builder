@@ -1,0 +1,162 @@
+# =============================================================================
+# Part 9 — Helm Chart for crawler-core (API, Worker, Profile Manager)
+# =============================================================================
+# File: infra/helm-charts/crawler-core/values.yaml
+# This values file configures the core services of the crawler ecosystem.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Global settings
+# ---------------------------------------------------------------------------
+global:
+  environment: production
+  image:
+    repository: crawler/core
+    tag: latest
+    pullPolicy: Always
+  imagePullSecrets:
+    - name: dockercred
+  storageClass: local-path
+  vault:
+    address: "http://vault.crawler-ecosystem.com:8200"
+    role: crawler
+    mount: secret
+
+# ---------------------------------------------------------------------------
+# API Server
+# ---------------------------------------------------------------------------
+api:
+  enabled: true
+  replicaCount: 2
+  service:
+    type: ClusterIP
+    port: 3000
+    targetPort: 3000
+    annotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/path: "/metrics"
+      prometheus.io/port: "3000"
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 100m
+    limits:
+      memory: 1Gi
+      cpu: 1000m
+  env:
+    NODE_ENV: production
+    DB_HOST: "postgresql-primary"
+    DB_PORT: "5432"
+    DB_USER: "crawler"
+    DB_PASSWORD: "crawler_db_password"   # overridden by Vault
+    REDIS_URL: "redis://:super_strong_password@keydb-master:6379"
+    STREAM_NAME: "crawler:tasks"
+    GROUP_NAME: "crawler-group"
+    VAULT_ADDR: "http://vault.crawler-ecosystem.com:8200"
+  livenessProbe:
+    httpGet:
+      path: /api/health
+      port: 3000
+    initialDelaySeconds: 15
+    periodSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /api/health
+      port: 3000
+    initialDelaySeconds: 5
+    periodSeconds: 5
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ---------------------------------------------------------------------------
+# Worker (queue consumer)
+# ---------------------------------------------------------------------------
+worker:
+  enabled: true
+  replicaCount: 3
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    triggers:
+      - type: redis
+        metadata:
+          address: "keydb-master:6379"
+          password: "super_strong_password"
+          listName: "crawler:tasks:high"
+          listLength: "50"
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 250m
+    limits:
+      memory: 2Gi
+      cpu: 2000m
+  env:
+    NODE_ENV: production
+    DB_HOST: "postgresql-primary"
+    DB_PORT: "5432"
+    DB_USER: "crawler"
+    DB_PASSWORD: "crawler_db_password"
+    REDIS_URL: "redis://:super_strong_password@keydb-master:6379"
+    STREAM_NAME: "crawler:tasks"
+    GROUP_NAME: "crawler-group"
+    WORKER_NAME: "worker"
+  livenessProbe:
+    exec:
+      command:
+        - sh
+        - -c
+        - "pgrep -f 'worker' || exit 1"
+    initialDelaySeconds: 30
+    periodSeconds: 20
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ---------------------------------------------------------------------------
+# Profile Manager (headless browser handler)
+# ---------------------------------------------------------------------------
+profile_manager:
+  enabled: true
+  replicaCount: 1
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 100m
+    limits:
+      memory: 1Gi
+      cpu: 500m
+  env:
+    CHROMIUM_PATH: "/usr/bin/chromium"
+    PUPPETEER_EXECUTABLE_PATH: "/usr/bin/chromium"
+    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: "true"
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      add:
+        - SYS_ADMIN
+  livenessProbe:
+    tcpSocket:
+      port: 3001
+    initialDelaySeconds: 20
+    periodSeconds: 10
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ---------------------------------------------------------------------------
+# Monitoring
+# ---------------------------------------------------------------------------
+monitoring:
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    path: /metrics

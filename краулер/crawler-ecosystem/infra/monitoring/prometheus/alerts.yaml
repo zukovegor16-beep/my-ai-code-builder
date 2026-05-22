@@ -1,0 +1,94 @@
+# =============================================================================
+# Part 13 — Monitoring: Prometheus Alert Rules and Grafana Datasources
+# =============================================================================
+# File: infra/monitoring/prometheus/alerts.yaml
+# SLO-oriented alerting rules for the Mega Crawler ecosystem.
+# =============================================================================
+
+groups:
+  - name: crawler_slo_alerts
+    interval: 30s
+    rules:
+      # --------------------------------------------------------
+      # High task latency (99th percentile > 5 seconds)
+      # --------------------------------------------------------
+      - alert: HighTaskLatency
+        expr: histogram_quantile(0.99, rate(crawler_task_duration_seconds_bucket[5m])) > 5
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "99th percentile of task duration is > 5 sec"
+          description: "For the last 15 minutes, 99% of tasks took longer than 5 seconds. Current value: {{ $value }} sec."
+
+      # --------------------------------------------------------
+      # Critical queue depth (> 10,000 pending tasks)
+      # --------------------------------------------------------
+      - alert: QueueDepthCritical
+        expr: sum(crawler_queue_length) > 10000
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Task queue exceeds 10,000 items"
+          description: "The queue has been above 10,000 for 5 minutes. Current value: {{ $value }}."
+
+      # --------------------------------------------------------
+      # High error rate (> 10% of requests fail)
+      # --------------------------------------------------------
+      - alert: HighErrorRate
+        expr: rate(crawler_errors_total[5m]) / rate(crawler_requests_total[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Error rate > 10%"
+          description: "More than 10% of requests are failing for 10 minutes."
+
+      # --------------------------------------------------------
+      # Low proxy count (< 50 active proxies)
+      # --------------------------------------------------------
+      - alert: LowProxyCount
+        expr: crawler_active_proxies < 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Active proxy count < 50"
+          description: "Only {{ $value }} proxies are currently active."
+
+      # --------------------------------------------------------
+      # High GPU temperature (> 80°C)
+      # --------------------------------------------------------
+      - alert: GPUTemperatureHigh
+        expr: nvidia_gpu_temperature_celsius > 80
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU temperature > 80°C"
+          description: "GPU {{ $labels.gpu }} on node {{ $labels.node }} is overheating."
+
+      # --------------------------------------------------------
+      # API service down
+      # --------------------------------------------------------
+      - alert: APIDown
+        expr: up{job="api-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API service is down"
+          description: "The API service has been unreachable for more than 1 minute."
+
+      # --------------------------------------------------------
+      # Redis down
+      # --------------------------------------------------------
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis is down"
+          description: "Redis server has been unreachable for more than 1 minute."

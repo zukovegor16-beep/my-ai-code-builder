@@ -1,0 +1,23 @@
+# =============================================================================
+# Template: hpa-worker.yaml (KEDA ScaledObject)
+# =============================================================================
+# File: infra/helm-charts/crawler-core/templates/hpa-worker.yaml
+{{- if and .Values.worker.enabled .Values.worker.autoscaling.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ .Release.Name }}-worker-scaler
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Release.Name }}-worker
+  minReplicaCount: {{ .Values.worker.autoscaling.minReplicas }}
+  maxReplicaCount: {{ .Values.worker.autoscaling.maxReplicas }}
+  triggers:
+  {{- range .Values.worker.autoscaling.triggers }}
+  - type: {{ .type }}
+    metadata:
+      {{- toYaml .metadata | nindent 6 }}
+  {{- end }}
+{{- end }}

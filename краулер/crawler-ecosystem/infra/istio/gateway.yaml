@@ -1,0 +1,62 @@
+# =============================================================================
+# Part 10 — Istio Service Mesh (Gateway, VirtualService, DestinationRule)
+# =============================================================================
+# File: infra/istio/gateway.yaml
+# Defines the ingress gateway for the crawler ecosystem.
+# All external HTTP/HTTPS traffic enters here.
+# =============================================================================
+
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: crawler-gateway
+  namespace: crawler
+spec:
+  selector:
+    app: istio-ingressgateway
+    istio: ingressgateway
+  servers:
+    # ---------------------------------------------------------------
+    # HTTPS server (port 443) for secure API and monitoring access
+    # ---------------------------------------------------------------
+    - port:
+        number: 443
+        name: https-api
+        protocol: HTTPS
+      hosts:
+        - "api.crawler-ecosystem.com"
+        - "*.monitoring.crawler-ecosystem.com"
+      tls:
+        mode: SIMPLE
+        credentialName: crawler-tls-credential
+    # ---------------------------------------------------------------
+    # HTTP server (port 80) – redirects to HTTPS (handled by Cloudflare,
+    # but also configured here for completeness)
+    # ---------------------------------------------------------------
+    - port:
+        number: 80
+        name: http-api
+        protocol: HTTP
+      hosts:
+        - "api.crawler-ecosystem.com"
+        - "*.monitoring.crawler-ecosystem.com"
+    # ---------------------------------------------------------------
+    # WebSocket server (same ports, protocol HTTP)
+    # ---------------------------------------------------------------
+    - port:
+        number: 3000
+        name: ws-api
+        protocol: HTTP
+      hosts:
+        - "api.crawler-ecosystem.com"
+    # ---------------------------------------------------------------
+    # Internal mesh gateway for East-West traffic (optional)
+    # ---------------------------------------------------------------
+    - port:
+        number: 15443
+        name: tls-internal
+        protocol: TLS
+      hosts:
+        - "*.crawler.svc.cluster.local"
+      tls:
+        mode: ISTIO_MUTUAL

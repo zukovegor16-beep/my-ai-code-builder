@@ -1,0 +1,134 @@
+# =============================================================================
+# File: infra/ansible/playbooks/worker-join.yml
+# Purpose: Robust worker node joining with pre-flight checks, retries,
+#          GPU support validation, and kubectl access setup.
+# -----------------------------------------------------------------------------
+
+- name: Join worker / GPU nodes to cluster
+  hosts: workers, gpu_workers
+  become: yes
+  gather_facts: yes
+  vars:
+    master_ip: "10.0.1.10"
+    k3s_data_dir: "/var/lib/rancher/k3s"
+    max_retries: 5
+  pre_tasks:
+    - name: Retrieve join token from master
+      delegate_to: "{{ master_ip }}"
+      slurp:
+        src: "/var/lib/rancher/k3s/server/node-token"
+      register: worker_token_raw
+      ignore_errors: yes
+
+    - name: Set join token fact
+      set_fact:
+        worker_token: "{{ (worker_token_raw.content | b64decode).strip() }}"
+      when: worker_token_raw.content is defined
+
+    - name: Validate join token
+      fail:
+        msg: "Unable to retrieve worker join token from master {{ master_ip }}"
+      when: worker_token is not defined or worker_token | length == 0
+
+  tasks:
+    # --------------------------------------------------
+    # 1. Pre-flight checks
+    # --------------------------------------------------
+    - name: Check if node is already part of cluster
+      stat:
+        path: "/etc/rancher/k3s/k3s.yaml"
+      register: already_joined
+
+    - name: Leave existing cluster if forced
+      command: /usr/local/bin/k3s-agent-uninstall.sh
+      when: already_joined.stat.exists and force_rejoin | default(false)
+      ignore_errors: yes
+
+    # --------------------------------------------------
+    # 2. GPU-specific preparations
+    # --------------------------------------------------
+    - name: Install GPU drivers if not present
+      block:
+        - name: Add NVIDIA repo
+          shell: |
+            curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+            curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+              sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+              tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+          args:
+            executable: /bin/bash
+
+        - name: Install NVIDIA packages
+          apt:
+            name:
+              - nvidia-driver-535
+              - nvidia-container-toolkit
+            state: present
+            update_cache: yes
+
+        - name: Restart containerd
+          systemd:
+            name: containerd
+            state: restarted
+      when: "'gpu' in group_names"
+
+    # --------------------------------------------------
+    # 3. Join cluster with retry logic
+    # --------------------------------------------------
+    - name: Attempt joining K3s cluster
+      shell: |
+        curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="agent \
+          --server https://{{ master_ip }}:6443 \
+          --token {{ worker_token }} \
+          --data-dir={{ k3s_data_dir }}/data" \
+        sh -
+      register: join_result
+      until: join_result is success
+      retries: "{{ max_retries }}"
+      delay: 10
+      ignore_errors: yes
+
+    - name: Verify installation
+      stat:
+        path: "/usr/local/bin/k3s"
+      register: k3s_installed
+
+    - name: Fail if installation failed after retries
+      fail:
+        msg: "Worker {{ inventory_hostname }} failed to join after {{ max_retries }} attempts"
+      when: not k3s_installed.stat.exists
+
+    # --------------------------------------------------
+    # 4. Enable kubectl access (optional)
+    # --------------------------------------------------
+    - name: Copy kubeconfig from master
+      copy:
+        src: "{{ playbook_dir }}/../kubeconfig/k3s.yaml"
+        dest: /home/ubuntu/.kube/config
+        owner: ubuntu
+        group: ubuntu
+      delegate_to: localhost
+      become: no
+      when: copy_kubeconfig | default(false)
+
+    - name: Set KUBECONFIG environment variable
+      lineinfile:
+        dest: /home/ubuntu/.bashrc
+        line: "export KUBECONFIG=/home/ubuntu/.kube/config"
+        owner: ubuntu
+        group: ubuntu
+      when: copy_kubeconfig | default(false)
+
+    # --------------------------------------------------
+    # 5. Health check
+    # --------------------------------------------------
+    - name: Wait for node to become Ready
+      command: /usr/local/bin/k3s kubectl get node {{ inventory_hostname }} -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+      register: node_ready
+      until: node_ready.stdout == 'True'
+      retries: 60
+      delay: 5
+
+    - name: Output success
+      debug:
+        msg: "Worker {{ inventory_hostname }} joined and is Ready."
