@@ -6,6 +6,7 @@
 #   - синтаксическую проверку JS (node --check)
 #   - саморефлексию (до 5 попыток)
 #   - сохранение по путям, создание папок
+#   - codevet проверку и исправление (fix_with_codevet)
 
 import os
 import sys
@@ -59,11 +60,29 @@ def generate_with_local(prompt):
         print(f"❌ Не удалось запустить локальную модель: {e}")
     return None
 
-def reflect_and_improve(code, error_info, file_path):
-    """Отправляет код + ошибки в API для исправления."""
-    print(f"🧠 Рефлексия для {file_path}...")
+def reflect_and_improve(code, error_info, file_path=""):
+    """Отправляет код + ошибки в API для исправления. file_path опционален."""
+    print(f"🧠 Рефлексия для {file_path if file_path else 'файла'}...")
     prompt = f"Файл {file_path} содержит ошибки:\n{error_info}\n\nВот текущий код:\n```\n{code}\n```\n\nИсправь все ошибки и выдай полный исправленный код. Не используй сокращения '// ... rest of the code'. Верни только код."
     return generate_with_api(prompt)
+
+def fix_with_codevet(file_path):
+    """Codevet проверяет и исправляет код (использует локальную модель, если доступна)."""
+    print("🩺 Codevet проверяет и автоисправляет...")
+    try:
+        result = subprocess.run(["codevet", "fix", file_path], capture_output=True, text=True, timeout=120)
+        if "Error" not in result.stdout and "FAIL" not in result.stdout:
+            print("✅ Codevet успешно завершил проверку.")
+            return True, ""
+        else:
+            print(f"⚠️ Codevet нашёл ошибки:\n{result.stdout}")
+            return False, result.stdout
+    except FileNotFoundError:
+        print("⚠️ Codevet не установлен (пропускаем)")
+        return True, ""
+    except Exception as e:
+        print(f"❌ Ошибка при запуске Codevet: {e}")
+        return False, str(e)
 
 def syntax_check_js(file_path):
     """Проверяет синтаксис JavaScript файла через node --check."""
