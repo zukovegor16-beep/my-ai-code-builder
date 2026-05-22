@@ -1,0 +1,190 @@
+python orchestrator.py "Сгенерируй полный код проекта распределённого краулера-харвестера email. Язык: Node.js (ES2022). Стек: Express, WebSocket (ws), PostgreSQL (pg), Redis (ioredis), Puppeteer (puppeteer-extra, stealth). Все файлы должны быть рабочими, с обработкой ошибок, логами, комментариями. Верни результат строго в формате JSON: { 'files': [ { 'path': 'путь/от/корня', 'content': 'содержимое файла' } ] }. Пути относительно корня проекта. Используй зависимости: express, ws, pg, ioredis, puppeteer-extra, puppeteer-extra-plugin-stealth, jsonwebtoken, bcrypt, winston, express-rate-limit, cors, joi, axios, whois, node-fetch, prom-client, speakeasy, qrcode, tesseract.js, exifr, simple-git, dotenv, helmet, compression, multer, archiver. Подробные требования:
+
+--- 0. СТРУКТУРА ПАПОК (создать все файлы по путям) ---
+- .env.example
+- docker-compose.yml
+- package.json
+- core/server.js
+- core/db.js
+- core/queue.js
+- core/collector.js
+- core/logger.js
+- core/migrate.js
+- core/metrics.js
+- core/redis-schema.json
+- core/openapi.yaml
+- core/websocket-events.md
+- core/errors.json
+- core/rbac-policy.json
+- core/security/jwt.js
+- core/security/encryption.js
+- core/security/2fa.js
+- core/migrations/001_init.sql
+- core/migrations/002_indexes.sql
+- core/migrations/003_partitions.sql
+- modules/web_crawler/HttpCrawler.js
+- modules/web_crawler/BrowserCrawler.js
+- modules/proxy_manager/ProxyManager.js
+- modules/captcha_manager/CaptchaManager.js
+- modules/profile_manager/ProfileGenerator.js
+- modules/deep_analysis/NetworkInterceptor.js
+- modules/deep_analysis/StorageLeakDetector.js
+- modules/deep_analysis/GraphQLCartographer.js
+- modules/deep_analysis/CmsIntruder.js
+- modules/deep_analysis/OcrPaleographer.js
+- modules/deep_analysis/NlpEngine.js
+- modules/whois_harvester/WhoisHarvester.js
+- modules/github_harvester/GitHubHarvester.js
+- modules/commoncrawl_harvester/CommonCrawlHarvester.js
+- plugins/index.js
+- plugins/tricks/cf_decoder.js
+- plugins/tricks/css_ghost.js
+- plugins/tricks/gravatar_reverse.js
+- plugins/tricks/exif_peek.js
+- plugins/tricks/jsonp_parasite.js
+- public/dashboard.html
+- tests/integration/health.test.js
+- tests/unit/queue.test.js
+- mocks/redis-mock.js
+- mocks/db-mock.js
+- deploy-guide.md
+
+--- 1. ФАЙЛ .env.example (переменные окружения) ---
+PORT=3000
+DB_URL=postgresql://user:pass@postgres:5432/crawler
+REDIS_URL=redis://redis:6379
+JWT_SECRET=change_me
+ENCRYPTION_KEY=32_byte_key_here
+CAPTCHA_TIMEOUT=120
+PROXY_SOURCES=https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt,https://api.proxyscrape.com/?request=getproxies&proxytype=http
+PROXY_CHECK_TIMEOUT=5000
+TESSERACT_LANG=eng
+GITHUB_TOKEN=your_token
+CPU_LIMIT_PERCENT=80
+MAX_BROWSERS=5
+TASK_RETRY_LIMIT=3
+
+--- 2. ФАЙЛ docker-compose.yml (три сервиса) ---
+version: '3.8'
+services:
+  postgres:
+    image: postgres:14
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: crawler
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - DB_URL=postgresql://user:pass@postgres:5432/crawler
+      - REDIS_URL=redis://redis:6379
+volumes:
+  pgdata:
+
+--- 3. ФАЙЛ package.json (скрипты и зависимости) ---
+{
+  "name": "email-crawler",
+  "version": "1.0.0",
+  "main": "core/server.js",
+  "scripts": {
+    "start": "node core/server.js",
+    "dev": "nodemon core/server.js",
+    "migrate": "node core/migrate.js",
+    "test": "jest"
+  },
+  "dependencies": { ... все перечисленные выше библиотеки, плюс "nodemon" в dev }
+}
+
+--- 4. БАЗА ДАННЫХ (файлы миграций) ---
+4.1 core/migrations/001_init.sql
+- Создать схему core.
+- Таблицы: sessions (id SERIAL PRIMARY KEY, sessionId UUID UNIQUE, status VARCHAR, created_at TIMESTAMP, updated_at TIMESTAMP), emails (id SERIAL, email VARCHAR, source_url TEXT, tags TEXT[], session_id INTEGER REFERENCES sessions(id), created_at TIMESTAMP, PRIMARY KEY (id, created_at) ) PARTITION BY RANGE (created_at), visited_urls (id SERIAL, url TEXT, session_id INTEGER, depth INTEGER, created_at TIMESTAMP) PARTITION BY RANGE (created_at), proxy_pool (id SERIAL, proxy VARCHAR, type VARCHAR, last_checked TIMESTAMP, is_alive BOOLEAN, failures INTEGER, created_at TIMESTAMP), profiles (id SERIAL, fingerprint JSONB, cookies TEXT, created_at TIMESTAMP), rbac_users (id SERIAL, username VARCHAR UNIQUE, role VARCHAR, password_hash VARCHAR, two_factor_secret VARCHAR, backup_codes TEXT[]), audit_log (id SERIAL, user_id INTEGER, action VARCHAR, details JSONB, created_at TIMESTAMP), config_history (id SERIAL, config_key VARCHAR, old_value TEXT, new_value TEXT, changed_by INTEGER, created_at TIMESTAMP).
+4.2 core/migrations/002_indexes.sql
+- CREATE INDEX idx_emails_email ON emails(email);
+- CREATE INDEX idx_emails_source_url ON emails(source_url);
+- CREATE INDEX idx_emails_created_at ON emails(created_at);
+- CREATE INDEX idx_sessions_session_id ON sessions(sessionId);
+- CREATE INDEX idx_visited_urls_session_id ON visited_urls(session_id);
+- CREATE INDEX idx_visited_urls_created_at ON visited_urls(created_at);
+- CREATE INDEX idx_proxy_pool_alive ON proxy_pool(is_alive);
+4.3 core/migrations/003_partitions.sql
+- Создать функцию create_monthly_partitions(start_date DATE, months INT) для автоматического создания партиций emails и visited_urls. Вызвать её при старте, создав партиции на текущий месяц и следующие два.
+
+--- 5. ЯДРО (основные сервисы) ---
+5.1 core/db.js
+- Экспортировать пул pg.Pool, функцию query(sql, params), метод getPool(). При старте выполнить миграцию через runMigrations().
+5.2 core/queue.js
+- Класс RedisQueue: конструктор принимает redisUrl, инициализирует ioredis. Методы pushTask(queueName, task) — валидирует по redis-schema.json, XADD с MAXLEN 10000. readGroupTasks(group, consumer, count) — XREADGROUP. ackTask(stream, id) — XACK. claimStalledTasks().
+5.3 core/collector.js
+- Подписка на канал 'harvest:emails' через Redis Pub/Sub. При получении сообщения: парсит JSON, вызывает db.query для вставки в таблицу emails, затем через WebSocketServer (глобальный) рассылает событие 'email_found'.
+5.4 core/logger.js
+- winston: форматы timestamp, json. Два транспорта: console (уровень info) и файл (app.log, уровень debug). Экспортировать childLogger(moduleName).
+5.5 core/security/jwt.js
+- Функции: generateAccessToken(user), generateRefreshToken(user), verifyToken(token), middleware authenticate (проверяет access токен из заголовка Authorization: Bearer), authorize(...roles).
+5.6 core/security/encryption.js
+- AES-256-GCM: encrypt(text, keyId) — генерирует IV и тег, возвращает base64. decrypt(ciphertext, keyId). Ключи хранятся в .env как ENCRYPTION_KEY_1, ENCRYPTION_KEY_2... поддержка ротации.
+5.7 core/security/2fa.js
+- speakeasy: generateSecret(username), verifyToken(secret, token). Генерация 10 резервных кодов (хешировать bcrypt).
+5.8 core/server.js (самый объёмный)
+- Создать Express приложение.
+- Подключить helmet, cors, rateLimit (100 запросов в минуту), express.json().
+- Инициализировать WebSocketServer на том же порту.
+- Маршруты:
+  POST /api/start — проверка аутентификации, создание сессии (генерация UUID), создание задачи в очередь high: { url: body.url, sessionId, depth:0, retryCount:0, priority: 'high' }, возвращает sessionId.
+  POST /api/stop — принимает { sessionId }, удаляет все задачи из очередей, связанные с сессией.
+  POST /api/captcha/solve — { sessionId, token }, вызывает CaptchaManager.resolve(sessionId, token).
+  GET /api/emails — пагинация и фильтры (sessionId, sourceUrl, email), выдача из БД.
+  GET /api/export — экспорт в CSV (использовать archiver).
+  POST /api/proxy/fetch-free — вызов ProxyManager.refreshPool() синхронно.
+  GET /api/health — проверка БД (SELECT 1) и Redis (ping).
+  GET /api/metrics — для prom-client.
+- WebSocket: при подключении авторизация через токен в query. Клиенту отправляются события: session_started, session_stopped, captcha_required (с url и sessionId), email_found, proxy_update, worker_status. Heartbeat каждые 30 секунд, разрыв при простое.
+- Запуск HTTP + WS на порту PORT.
+
+--- 6. МОДУЛИ ---
+6.1 modules/proxy_manager/ProxyManager.js
+- Класс: constructor(redisClient, dbPool). Метод loadFromSources() — загружает списки из PROXY_SOURCES (по одному URL, парсинг строк). Проверка: TCP connect (net.createConnection) таймаут 5с. Живые прокси сохраняет в Redis (sorted set с оценкой времени) и в БД (upsert). Метод getProxy() — возвращает случайный живой прокси из Redis (ZRANDMEMBER). Фоновый процесс refreshPool() каждые 10 минут.
+6.2 modules/web_crawler/HttpCrawler.js
+- Класс: constructor(queue, proxyManager, collector, logger). Метод start(consumerGroup) — запускает бесконечный цикл: читает задачи из очередей (high, medium, low) с помощью XREADGROUP BLOCK. Для каждой задачи: берёт прокси (await proxyManager.getProxy()), делает fetch (node-fetch) с прокси, таймаут 30с. Извлекает email из HTML через регулярку /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/ и через плагины. Каждый найденный email публикует в канал 'harvest:emails' (Redis PUBLISH). При ошибке: если ретрайбл (ERR_PROXY_FAILED, ERR_PARSING) и retryCount < 3, увеличить retryCount и отправить обратно в очередь с экспоненциальной задержкой (используя XADD с полем delay).
+6.3 modules/web_crawler/BrowserCrawler.js
+- Использует puppeteer-extra, stealth. Динамический лимит браузеров: проверять CPU load (os.loadavg()), если <0.8 → до 5 браузеров, иначе 2. Для каждой задачи: выбрать профиль из ProfileGenerator, запустить браузер, эмулировать мышь (page.mouse.move). Обработка капчи: если появляется iframe reCAPTCHA, отправить WebSocket событие 'captcha_required' (через глобальный wsServer) и вызвать captchaManager.waitForCaptcha(sessionId, timeout). При получении решения — вставить решение в страницу (сложно, заглушка: просто продолжить). Сбор email через перехват ответов (NetworkInterceptor) и page.evaluate.
+6.4 modules/captcha_manager/CaptchaManager.js
+- Хранит Map: sessionId -> { resolve, reject, timer }. Метод waitForCaptcha(sessionId, timeout) возвращает Promise, создаёт таймер. Метод resolveCaptcha(sessionId, token) — находит Promise и разрешает его. Вызывается из API /captcha/solve.
+6.5 modules/profile_manager/ProfileGenerator.js
+- Генерация случайного fingerprint: User-Agent (из списка современных), viewport, WebGL vendor, Canvas подпись. Сохраняет профиль в БД (таблица profiles). Метод getProfile(id) возвращает объект для puppeteer: { userAgent, viewport, ... }.
+6.6 Остальные модули (NetworkInterceptor, StorageLeakDetector и др.) реализовать в виде заглушек (console.log) для экономии контекста, но с корректной структурой.
+
+--- 7. ПЛАГИНЫ ---
+7.1 plugins/index.js — экспортирует функцию loadPlugins(directory), которая читает все .js файлы, импортирует, возвращает массив { name, run }.
+7.2 Каждый плагин (cf_decoder, css_ghost, ...) должен экспортировать run(html, url) и возвращать массив email строк. Для cf_decoder: искать script с 'cf_email', декодировать rot13. Для остальных — простые регулярки (заглушки).
+
+--- 8. ИНТЕРФЕЙС ---
+8.1 public/dashboard.html — использует Bootstrap, Chart.js. Подключается к WebSocket (ws://...). Отображает таблицу email, метрики (запросы к /api/metrics), кнопки Start/Stop (с полем URL), панель прокси, область для решения капчи. Логи выводятся в div.
+
+--- 9. ТЕСТЫ И MOCKS ---
+9.1 tests/unit/queue.test.js — тесты для RedisQueue (мокать ioredis).
+9.2 mocks/redis-mock.js — эмуляция Redis для тестов.
+9.3 deploy-guide.md — пошаговая инструкция: клонировать, настроить .env, docker-compose up, выполнить миграции, запустить.
+
+--- 10. ВАЖНЫЕ УСЛОВИЯ ---
+- Все пути в JSON должны начинаться с корня (без ведущего /).
+- В content экранировать обратные кавычки и двойные кавычки, чтобы JSON был валидным.
+- Все асинхронные функции должны быть корректно написаны (async/await).
+- Код должен быть самодостаточным: import/require согласованы (используй require, т.к. Node.js по умолчанию CommonJS).
+- Не добавляй лишних пояснений вне JSON.
+
+Теперь сгенерируй JSON-объект с массивом files, где каждый элемент — файл с полным содержимым. Учти, что объём кода огромен, поэтому для сложных модулей (GraphQL, OCR, NLP) создай упрощённые версии (заглушки с комментарием 'TODO: implement'). Главное — чтобы проект запускался и базовая функциональность (API, очередь, сбор email через HttpCrawler) работала."
