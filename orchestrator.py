@@ -76,9 +76,17 @@ def reflect_and_improve(code, error_info=""):
 
 # ------------------- ГЛАВНЫЙ ЦИКЛ -------------------
 def main():
-    # Получаем промт из аргументов командной строки
-    if len(sys.argv) > 1:
+    # --- Приоритет загрузки промта ---
+    # 1. Если есть файл prompt.txt – читаем его полностью
+    if os.path.exists("prompt.txt"):
+        with open("prompt.txt", "r", encoding="utf-8") as f:
+            prompt = f.read()
+        print("📄 Промт загружен из файла prompt.txt")
+    # 2. Иначе – из аргументов командной строки
+    elif len(sys.argv) > 1:
         prompt = " ".join(sys.argv[1:])
+        print("📝 Промт взят из аргументов командной строки")
+    # 3. Иначе – стандартный промт
     else:
         prompt = """Напиши модуль на Python `proxy_manager.py`, который:
 - содержит класс ProxyManager с асинхронными методами,
@@ -88,7 +96,7 @@ def main():
 Используй библиотеку asyncio."""
         print("⚠️ Промт не передан, используется стандартный.")
 
-    print(f"📝 Промт: {prompt[:150]}...")
+    print(f"📝 Длина промта: {len(prompt)} символов, начало: {prompt[:150]}...")
 
     # --- Шаг 1: Генерация кода (сначала API) ---
     code = generate_with_api(prompt)
