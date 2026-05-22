@@ -1,31 +1,43 @@
+#!/usr/bin/env python3
+# orchestrator.py - генерация всего проекта из project_plan.json
+# Поддерживает:
+#   - чтение плана (JSON)
+#   - генерацию каждого файла через API
+#   - синтаксическую проверку JS (node --check)
+#   - саморефлексию (до 5 попыток)
+#   - сохранение по путям, создание папок
+
 import os
 import sys
 import subprocess
 import json
+import time
 
 # ------------------- НАСТРОЙКИ -------------------
-OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY")   # ваш ключ
-API_MODEL = "openrouter/free"                           # бесплатная маршрутизация
-LOCAL_MODEL = "qwen2.5-coder:7b"                        # локальная 7B (если нужна)
-OUTPUT_FILE = "generated_code.py"                       # итоговый файл
+OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY")
+API_MODEL = "openrouter/free"
+LOCAL_MODEL = "qwen2.5-coder:7b"          # резерв
+PLAN_FILE = "project_plan.json"
+OUTPUT_DIR = "."                           # корень проекта (папка, где лежит orchestrator.py)
 
 # ------------------- ФУНКЦИИ -------------------
 def generate_with_api(prompt, model=API_MODEL):
     """Генерация через OpenRouter (free)."""
     print(f"🌐 Генерация через API ({model})...")
     try:
+        import requests
         resp = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={"Authorization": f"Bearer {OPENROUTER_KEY}"},
             json={"model": model, "messages": [{"role": "user", "content": prompt}]},
-            timeout=120
+            timeout=180
         )
         if resp.status_code == 200:
             code = resp.json()['choices'][0]['message']['content']
             print("✅ API вернул код.")
             return code
         else:
-            print(f"⚠️ Ошибка API: {resp.status_code} — {resp.text}")
+            print(f"⚠️ Ошибка API: {resp.status_code} — {resp.text[:200]}")
     except Exception as e:
         print(f"❌ Сбой API: {e}")
     return None
@@ -47,93 +59,154 @@ def generate_with_local(prompt):
         print(f"❌ Не удалось запустить локальную модель: {e}")
     return None
 
-def fix_with_codevet(file_path):
-    """Codevet проверяет и исправляет код (использует локальную модель, если доступна)."""
-    print("🩺 Codevet проверяет и автоисправляет...")
-    try:
-        result = subprocess.run(["codevet", "fix", file_path], capture_output=True, text=True, timeout=120)
-        if "Error" not in result.stdout and "FAIL" not in result.stdout:
-            print("✅ Codevet успешно завершил проверку.")
-            return True, ""
-        else:
-            print(f"⚠️ Codevet нашёл ошибки:\n{result.stdout}")
-            return False, result.stdout
-    except FileNotFoundError:
-        print("⚠️ Codevet не установлен (пропускаем)")
-        return True, ""
-    except Exception as e:
-        print(f"❌ Ошибка при запуске Codevet: {e}")
-        return False, str(e)
-
-def reflect_and_improve(code, error_info=""):
-    """Отправляем код в API на доработку с учётом ошибок."""
-    print("🧠 Отправляем код на доработку (рефлексия)...")
-    prompt = f"Вот код Python:\n```python\n{code}\n```\n"
-    if error_info:
-        prompt += f"Найденные ошибки или замечания:\n{error_info}\n"
-    prompt += "Исправь все ошибки, улучши структуру и выдай полный исправленный код. Без лишних пояснений, только код."
+def reflect_and_improve(code, error_info, file_path):
+    """Отправляет код + ошибки в API для исправления."""
+    print(f"🧠 Рефлексия для {file_path}...")
+    prompt = f"Файл {file_path} содержит ошибки:\n{error_info}\n\nВот текущий код:\n```\n{code}\n```\n\nИсправь все ошибки и выдай полный исправленный код. Не используй сокращения '// ... rest of the code'. Верни только код."
     return generate_with_api(prompt)
 
-# ------------------- ГЛАВНЫЙ ЦИКЛ -------------------
-def main():
-    # --- Приоритет загрузки промта ---
-    # 1. Если есть файл prompt.txt – читаем его полностью
-    if os.path.exists("prompt.txt"):
-        with open("prompt.txt", "r", encoding="utf-8") as f:
-            prompt = f.read()
-        print("📄 Промт загружен из файла prompt.txt")
-    # 2. Иначе – из аргументов командной строки
-    elif len(sys.argv) > 1:
-        prompt = " ".join(sys.argv[1:])
-        print("📝 Промт взят из аргументов командной строки")
-    # 3. Иначе – стандартный промт
+def syntax_check_js(file_path):
+    """Проверяет синтаксис JavaScript файла через node --check."""
+    result = subprocess.run(["node", "--check", file_path], capture_output=True, text=True)
+    if result.returncode == 0:
+        return True, ""
     else:
-        prompt = """Напиши модуль на Python `proxy_manager.py`, который:
-- содержит класс ProxyManager с асинхронными методами,
-- умеет загружать список прокси из списка,
-- имеет метод get_proxy() для получения случайного прокси,
-- имеет метод rotate_proxy() для удаления текущего прокси и перехода к следующему.
-Используй библиотеку asyncio."""
-        print("⚠️ Промт не передан, используется стандартный.")
+        return False, result.stderr
 
-    print(f"📝 Длина промта: {len(prompt)} символов, начало: {prompt[:150]}...")
+def generate_file(file_info, retry_limit=5):
+    """Генерирует один файл: вызывает API, проверяет синтаксис, рефлексия."""
+    path = file_info["path"]
+    required = file_info.get("required", True)
+    if not required:
+        print(f"⏭️ {path} помечен как необязательный, пропускаем")
+        return True
 
-    # --- Шаг 1: Генерация кода (сначала API) ---
-    code = generate_with_api(prompt)
-    if not code:                     # если API недоступен, пробуем локальную
-        code = generate_with_local(prompt)
-    if not code:
-        print("💔 Не удалось сгенерировать код. Проверьте подключение и настройки.")
+    full_path = os.path.join(OUTPUT_DIR, path)
+    if os.path.exists(full_path):
+        print(f"⏩ {path} уже существует, пропускаем")
+        return True
+
+    # Создаём папку, если нужно
+    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+
+    lines = file_info.get("lines", 200)
+    description = file_info.get("description", "")
+    is_js = path.endswith(".js")
+
+    # Базовый промт
+    prompt = f"""Ты — эксперт Node.js. Напиши полный рабочий код для файла {path}.
+
+Описание: {description}
+Примерный объём: {lines} строк.
+
+Требования:
+- Полный код без сокращений (запрещены комментарии '// ... rest of the code').
+- Используй CommonJS (require) для модулей.
+- Обрабатывай ошибки, логируй через core/logger.js.
+- Экспортируй функции/классы.
+- Код должен быть готов к запуску.
+
+Выдай только код, без пояснений.
+"""
+
+    for attempt in range(retry_limit):
+        print(f"🔄 Генерация {path} (попытка {attempt+1}/{retry_limit})...")
+        code = generate_with_api(prompt)
+        if not code:
+            time.sleep(3)
+            continue
+
+        # Временно сохраняем
+        temp_path = full_path + ".tmp"
+        with open(temp_path, "w", encoding="utf-8") as f:
+            f.write(code)
+
+        # Проверка синтаксиса (только для .js)
+        syntax_ok = True
+        error_msg = ""
+        if is_js:
+            syntax_ok, error_msg = syntax_check_js(temp_path)
+            if not syntax_ok:
+                print(f"⚠️ Синтаксическая ошибка в {path}:\n{error_msg[:300]}")
+                # Рефлексия: отправляем ошибку и код обратно
+                fixed = reflect_and_improve(code, error_msg, path)
+                if fixed:
+                    with open(temp_path, "w", encoding="utf-8") as f:
+                        f.write(fixed)
+                    # Повторная проверка
+                    syntax_ok, error_msg = syntax_check_js(temp_path)
+                    if syntax_ok:
+                        code = fixed
+                    else:
+                        print(f"❌ После рефлексии ошибки остались: {error_msg[:200]}")
+                else:
+                    print("❌ Рефлексия не дала результата")
+                    syntax_ok = False
+
+        if syntax_ok:
+            os.rename(temp_path, full_path)
+            print(f"✅ {path} сгенерирован и прошёл проверку")
+            return True
+        else:
+            # Удаляем временный файл и пробуем снова, обновляя промт (можно включить ошибку в промт)
+            os.remove(temp_path)
+            # Добавляем ошибку в промт для следующей попытки (чтобы модель знала)
+            prompt = f"""Файл {path} не прошёл проверку. Ошибка:
+{error_msg}
+
+Требования к файлу:
+{description}
+
+Напиши полный исправленный код. Без сокращений.
+"""
+            time.sleep(2)
+
+    print(f"❌ Не удалось сгенерировать {path} после {retry_limit} попыток")
+    return False
+
+def main():
+    if not OPENROUTER_KEY:
+        print("❌ Установите переменную окружения OPENROUTER_API_KEY")
+        sys.exit(1)
+
+    # Если передан аргумент (режим одного файла) – оставляем совместимость со старым способом
+    if len(sys.argv) > 1 and sys.argv[1] != "--plan":
+        # старый режим: первый аргумент – промт
+        prompt = " ".join(sys.argv[1:])
+        print("📝 Режим одного файла (совместимость)")
+        code = generate_with_api(prompt)
+        if code:
+            with open("generated_code.py", "w") as f:
+                f.write(code)
+            print("💾 Сохранено в generated_code.py")
         return
 
-    # Сохраняем черновик
-    with open(OUTPUT_FILE, "w") as f:
-        f.write(code)
-    print(f"💾 Черновик сохранён в {OUTPUT_FILE}")
+    # Основной режим: чтение project_plan.json
+    if not os.path.exists(PLAN_FILE):
+        print(f"❌ Файл {PLAN_FILE} не найден. Запусти с аргументом-промтом или создай план.")
+        sys.exit(1)
 
-    # --- Шаг 2: Проверка Codevet ---
-    success, errors = fix_with_codevet(OUTPUT_FILE)
+    with open(PLAN_FILE, "r", encoding="utf-8") as f:
+        plan = json.load(f)
 
-    # --- Шаг 3: Если ошибки есть, дорабатываем через API ---
-    if not success:
-        print("🔄 Codevet нашёл проблемы. Отправляем на доработку...")
-        improved = reflect_and_improve(code, errors)
-        if improved:
-            with open(OUTPUT_FILE, "w") as f:
-                f.write(improved)
-            print("✅ Доработанная версия сохранена.")
-            # Повторная проверка
-            fix_with_codevet(OUTPUT_FILE)
-        else:
-            print("⚠️ Не удалось получить доработанный код.")
-    else:
-        print("✨ Код прошёл первичную проверку. Можно запускать.")
+    files = plan.get("files", [])
+    required_files = [f for f in files if f.get("required", True)]
+    total = len(required_files)
+    print(f"📋 Найдено {total} обязательных файлов для генерации")
 
-    print(f"🏁 Итоговый код сохранён в {OUTPUT_FILE}")
+    success_count = 0
+    for idx, file_info in enumerate(required_files, 1):
+        print(f"\n🔨 [{idx}/{total}] Обработка {file_info['path']}")
+        if generate_file(file_info, retry_limit=5):
+            success_count += 1
+        # Небольшая пауза, чтобы не перегружать API
+        time.sleep(1)
+
+    print(f"\n🏁 Итог: успешно сгенерировано {success_count} из {total} файлов")
+    if success_count < total:
+        print("⚠️ Некоторые файлы не созданы. Проверьте логи выше.")
 
 if __name__ == "__main__":
-    # Импортируем requests внутри, чтобы не было ошибки, если модуль не установлен
-    global requests
     try:
         import requests
     except ImportError:
