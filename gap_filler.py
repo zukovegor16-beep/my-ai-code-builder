@@ -5,27 +5,24 @@ import json
 import subprocess
 import time
 import shutil
-from pathlib import Path
-from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
+from threading import Event
 
-# Импорт исходных функций orchestrator
 from orchestrator import generate_with_api, reflect_and_improve, generate_with_local, syntax_check_js
 
 # ------------------- КОНФИГУРАЦИЯ -------------------
 PLAN_FILE = "project_plan.json"
 SOURCE_DIR = "краулер"
-PROJECT_ROOT = "."            # измените на "краулер", если нужно генерировать внутрь папки
+PROJECT_ROOT = "."               # если нужно генерировать в "краулер", смените на "краулер"
 MAX_RETRIES_PER_FILE = 3
 GLOBAL_CYCLES = 3
 DRY_RUN = False
-USE_LOCAL = False             # включает локальный режим с fallback на API
+USE_LOCAL = False                # включает параллельную гонку локальной и API
+MAX_PARALLEL_FILES = 3           # сколько файлов генерировать одновременно
 
 # ------------------- УМНАЯ РЕФЛЕКСИЯ (FALLBACK) -------------------
 def reflect_with_fallback(code, error_info):
-    """
-    Пытается исправить код через локальную модель (если USE_LOCAL),
-    при неудаче переключается на API.
-    """
+    """Локальная рефлексия, при неудаче – API."""
     if USE_LOCAL:
         print("🧠 Локальная рефлексия...")
         prompt = (
@@ -35,12 +32,45 @@ def reflect_with_fallback(code, error_info):
             f"Не используй сокращения '// ... rest of the code'. Верни только код."
         )
         fixed = generate_with_local(prompt)
-        if fixed is not None and fixed.strip() != "":
+        if fixed and fixed.strip():
             return fixed
-        else:
-            print("⚠️ Локальная рефлексия не дала результата, пробуем API...")
-    # Fallback на оригинальную API-рефлексию
+        print("⚠️ Локальная рефлексия не удалась, пробуем API...")
     return reflect_and_improve(code, error_info)
+
+# ------------------- ГОНКА ГЕНЕРАЦИЙ -------------------
+def race_generation(prompt, use_local):
+    """
+    Запускает локальную и API генерацию параллельно.
+    Возвращает ответ от того, кто первым вернёт непустой результат.
+    """
+    result = [None]
+    stop_event = Event()
+
+    def local_worker():
+        if not use_local:
+            return
+        res = generate_with_local(prompt)
+        if res and not stop_event.is_set():
+            result[0] = res
+            stop_event.set()
+
+    def api_worker():
+        res = generate_with_api(prompt)
+        if res and not stop_event.is_set():
+            result[0] = res
+            stop_event.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = []
+        if use_local:
+            futures.append(executor.submit(local_worker))
+        futures.append(executor.submit(api_worker))
+        # Ждём завершения любого
+        done, not_done = wait(futures, return_when=FIRST_COMPLETED)
+        stop_event.set()          # сигнал остановить оставшийся поток
+        for f in not_done:
+            f.cancel()
+    return result[0]
 
 # ------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ -------------------
 def load_plan():
@@ -52,10 +82,6 @@ def find_file_in_source(target_filename, source_root):
         if target_filename in files:
             return os.path.join(root, target_filename)
     return None
-
-def copy_file_with_path_mapping(src_path, dst_path):
-    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-    shutil.copy2(src_path, dst_path)
 
 def is_file_complete(file_path):
     if not os.path.exists(file_path):
@@ -96,14 +122,8 @@ def generate_or_fix_file(file_info):
     for attempt in range(MAX_RETRIES_PER_FILE):
         print(f"🔄 Генерация/исправление {path} (попытка {attempt+1})")
 
-        # --- Генерация с fallback ---
-        code = None
-        if USE_LOCAL:
-            code = generate_with_local(prompt)
-            if code is None or code.strip() == "":
-                print("⚠️ Локальная модель не ответила, переключаемся на API...")
-        if code is None or code.strip() == "":
-            code = generate_with_api(prompt)
+        # Гонка: локальная vs API (оба потока параллельно)
+        code = race_generation(prompt, USE_LOCAL)
 
         if not code or code.strip() == "":
             time.sleep(2)
@@ -113,12 +133,11 @@ def generate_or_fix_file(file_info):
         with open(temp_path, "w", encoding="utf-8") as f:
             f.write(code)
 
-        # Проверка синтаксиса JS
+        # Синтаксическая проверка JS
         if path.endswith(".js"):
             result = subprocess.run(["node", "--check", temp_path], capture_output=True, text=True)
             if result.returncode != 0:
                 print(f"⚠️ Синтаксическая ошибка: {result.stderr[:200]}")
-                # Рефлексия с fallback
                 fixed = reflect_with_fallback(code, result.stderr)
                 if fixed:
                     with open(temp_path, "w", encoding="utf-8") as f:
@@ -138,6 +157,12 @@ def generate_or_fix_file(file_info):
         print(f"✅ {path} готов")
         return True
     return False
+
+def process_file(file_info):
+    """Обёртка для параллельного запуска."""
+    path = file_info["path"]
+    success = generate_or_fix_file(file_info)
+    return path, success
 
 def main():
     if not os.path.exists(PLAN_FILE):
@@ -166,8 +191,9 @@ def main():
                 else:
                     print(f"   [dry-run] скопировать {src} в {target_path}")
 
-    # ---- 2. Генерация недостающих или неполных файлов ----
+    # ---- 2. Генерация недостающих или неполных файлов параллельно ----
     print("\n🔧 Проверка полноты и генерация отсутствующих...")
+    incomplete_files = []
     for idx, file_info in enumerate(required_files, 1):
         path = file_info["path"]
         full_path = os.path.join(PROJECT_ROOT, path)
@@ -176,10 +202,20 @@ def main():
             print(f"✅ [{idx}/{len(required_files)}] {path} существует и полный")
         else:
             print(f"⚠️ [{idx}/{len(required_files)}] {path} отсутствует или неполный ({reason})")
-            if generate_or_fix_file(file_info):
-                print(f"   ✓ Создан/исправлен")
-            else:
-                print(f"   ✗ Не удалось после {MAX_RETRIES_PER_FILE} попыток")
+            incomplete_files.append(file_info)
+
+    if incomplete_files:
+        print(f"\n⚡ Запуск параллельной генерации {len(incomplete_files)} файлов (воркеров: {MAX_PARALLEL_FILES})...")
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FILES) as executor:
+            futures = {executor.submit(process_file, fi): fi["path"] for fi in incomplete_files}
+            for future in as_completed(futures):
+                path, success = future.result()
+                if success:
+                    print(f"   ✓ {path} создан/исправлен")
+                else:
+                    print(f"   ✗ {path} не удалось после {MAX_RETRIES_PER_FILE} попыток")
+    else:
+        print("🎉 Все файлы уже полны!")
 
     # ---- 3. Глобальная синтаксическая проверка и исправление ----
     print("\n🔍 Глобальная проверка всех JS файлов...")
@@ -204,7 +240,6 @@ def main():
             rel_path = os.path.relpath(js_file, PROJECT_ROOT)
             with open(js_file, "r", encoding="utf-8") as f:
                 code = f.read()
-            # Рефлексия с fallback
             fixed = reflect_with_fallback(code, err_msg)
             if fixed:
                 with open(js_file, "w", encoding="utf-8") as f:
@@ -227,5 +262,5 @@ if __name__ == "__main__":
         print("🏁 Режим DRY-RUN")
     if "--local" in sys.argv:
         USE_LOCAL = True
-        print("🏁 Режим: сначала локальная модель, при неудаче — API")
+        print("🏁 Режим: гонка локальной модели и API")
     main()
