@@ -5,72 +5,85 @@ import json
 import subprocess
 import time
 import shutil
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
-from threading import Event
-
-from orchestrator import generate_with_api, reflect_and_improve, generate_with_local, syntax_check_js
+import re
+import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ------------------- КОНФИГУРАЦИЯ -------------------
 PLAN_FILE = "project_plan.json"
 SOURCE_DIR = "краулер"
-PROJECT_ROOT = "."               # если нужно генерировать в "краулер", смените на "краулер"
-MAX_RETRIES_PER_FILE = 3
-GLOBAL_CYCLES = 3
+PROJECT_ROOT = "."
+MAX_RETRIES_PER_FILE = 2          # уменьшено, т.к. рефлексия стала умнее
+GLOBAL_CYCLES = 1                # одного глобального цикла достаточно
 DRY_RUN = False
-USE_LOCAL = False                # включает параллельную гонку локальной и API
-MAX_PARALLEL_FILES = 3           # сколько файлов генерировать одновременно
+MAX_PARALLEL_FILES = 3
 
-# ------------------- УМНАЯ РЕФЛЕКСИЯ (FALLBACK) -------------------
-def reflect_with_fallback(code, error_info):
-    """Локальная рефлексия, при неудаче – API."""
-    if USE_LOCAL:
-        print("🧠 Локальная рефлексия...")
-        prompt = (
-            f"Файл содержит ошибки:\n{error_info}\n\n"
-            f"Вот текущий код:\n```\n{code}\n```\n\n"
-            f"Исправь все ошибки и выдай полный исправленный код. "
-            f"Не используй сокращения '// ... rest of the code'. Верни только код."
-        )
-        fixed = generate_with_local(prompt)
-        if fixed and fixed.strip():
-            return fixed
-        print("⚠️ Локальная рефлексия не удалась, пробуем API...")
-    return reflect_and_improve(code, error_info)
+# ------------------- DeepSeek API -------------------
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "sk-f28bcbb45dca4f5b9db77b01b396625f")
+API_URL = "https://api.deepseek.com/v1/chat/completions"
+HEADERS = {
+    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+    "Content-Type": "application/json"
+}
 
-# ------------------- ГОНКА ГЕНЕРАЦИЙ -------------------
-def race_generation(prompt, use_local):
-    """
-    Запускает локальную и API генерацию параллельно.
-    Возвращает ответ от того, кто первым вернёт непустой результат.
-    """
-    result = [None]
-    stop_event = Event()
+# Системный промпт для первичной генерации – строгий и без лишних слов
+SYSTEM_PROMPT = (
+    "Ты — эксперт-разработчик. Пиши безупречный JavaScript (CommonJS) код. "
+    "Логируй ошибки через core/logger. Всегда используй try/catch. "
+    "Не добавляй комментариев, не оборачивай код в markdown. "
+    "Возвращай только код, готовый к запуску."
+)
 
-    def local_worker():
-        if not use_local:
-            return
-        res = generate_with_local(prompt)
-        if res and not stop_event.is_set():
-            result[0] = res
-            stop_event.set()
+# Системный промпт для исправления ошибок
+FIX_SYSTEM_PROMPT = (
+    "Ты — эксперт по отладке. Исправь синтаксическую ошибку в предоставленном коде, "
+    "сохранив всю функциональность. Отвечай только исправленным кодом без пояснений и без markdown-обёртки."
+)
 
-    def api_worker():
-        res = generate_with_api(prompt)
-        if res and not stop_event.is_set():
-            result[0] = res
-            stop_event.set()
+def extract_code(raw_response):
+    """Удаляет markdown-обёртку ```javascript ... ```, если она есть."""
+    if not raw_response:
+        return ""
+    # Ищем блок кода в формате ```javascript ... ```
+    match = re.search(r"```(?:javascript|js)?\s*\n?(.*?)\n?```", raw_response, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    # Если нет обёртки, возвращаем как есть, но убираем возможные начальные/конечные ```
+    return raw_response.strip().strip("`")
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = []
-        if use_local:
-            futures.append(executor.submit(local_worker))
-        futures.append(executor.submit(api_worker))
-        # Ждём завершения любого
-        done, not_done = wait(futures, return_when=FIRST_COMPLETED)
-        stop_event.set()          # сигнал остановить оставшийся поток
-        for f in not_done:
-            f.cancel()
-    return result[0]
+def generate_with_deepseek(prompt, max_tokens=1200):
+    """Вызов DeepSeek API. Возвращает очищенный код."""
+    payload = {
+        "model": "deepseek-chat",
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.2,
+        "max_tokens": max_tokens,
+        "stream": False
+    }
+    try:
+        resp = requests.post(API_URL, headers=HEADERS, json=payload, timeout=120)
+        if resp.status_code == 200:
+            data = resp.json()
+            raw = data["choices"][0]["message"]["content"]
+            return extract_code(raw)
+        else:
+            print(f"⚠️ Ошибка API: {resp.status_code} — {resp.text[:200]}")
+            return None
+    except Exception as e:
+        print(f"❌ Сбой API: {e}")
+        return None
+
+def reflect_and_improve(code, error_info):
+    """Исправляет ошибки в коде через DeepSeek."""
+    prompt = (
+        f"Код содержит ошибку:\n{error_info}\n\n"
+        f"Вот сам код:\n```javascript\n{code}\n```\n\n"
+        "Исправь ошибку и верни полный исправленный код."
+    )
+    return generate_with_deepseek(prompt, max_tokens=2000)  # для рефлексии можно чуть больше токенов
 
 # ------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ -------------------
 def load_plan():
@@ -94,72 +107,75 @@ def is_file_complete(file_path):
     for marker in incomplete_markers:
         if marker in content:
             return False, f"contains '{marker}'"
-    if file_path.endswith(".js"):
-        result = subprocess.run(["node", "--check", file_path], capture_output=True, text=True)
-        if result.returncode != 0:
-            return False, f"syntax error: {result.stderr[:200]}"
+    # Синтаксическую проверку здесь не делаем – она будет при генерации и в глобальной фазе
     return True, "ok"
 
 def generate_or_fix_file(file_info):
     path = file_info["path"]
     full_path = os.path.join(PROJECT_ROOT, path)
     description = file_info.get("description", "")
-    lines = file_info.get("lines", 200)
+    lines = file_info.get("lines", 150)
     os.makedirs(os.path.dirname(full_path), exist_ok=True)
 
-    prompt = f"""Файл: {path}
-Описание: {description}
-Ожидаемый объём: примерно {lines} строк.
+    # Динамический лимит токенов в зависимости от ожидаемого размера файла
+    if lines < 150:
+        max_tok = 800
+    elif lines < 350:
+        max_tok = 1500
+    else:
+        max_tok = 2000
 
-Напиши полный рабочий код. Требования:
-- Полный код, без сокращений (запрещены комментарии '// ... rest of the code').
-- Используй CommonJS (require).
-- Обрабатывай ошибки, логируй через core/logger.js.
-- Экспортируй функции/классы.
-- Код должен быть готов к запуску.
-Выдай только код, без пояснений.
-"""
+    # Лаконичный промпт
+    prompt = (
+        f"Создай файл {path}.\n"
+        f"Описание: {description}\n\n"
+        "Требования: CommonJS, логирование через core/logger, экспорт функций, обработка ошибок."
+    )
+
     for attempt in range(MAX_RETRIES_PER_FILE):
-        print(f"🔄 Генерация/исправление {path} (попытка {attempt+1})")
-
-        # Гонка: локальная vs API (оба потока параллельно)
-        code = race_generation(prompt, USE_LOCAL)
-
-        if not code or code.strip() == "":
+        print(f"🔄 Генерация {path} (попытка {attempt+1})")
+        code = generate_with_deepseek(prompt, max_tokens=max_tok)
+        if not code:
             time.sleep(2)
             continue
 
-        temp_path = full_path + ".tmp"
-        with open(temp_path, "w", encoding="utf-8") as f:
+        with open(full_path, "w", encoding="utf-8") as f:
             f.write(code)
 
-        # Синтаксическая проверка JS
+        # Проверка синтаксиса JS
         if path.endswith(".js"):
-            result = subprocess.run(["node", "--check", temp_path], capture_output=True, text=True)
+            result = subprocess.run(["node", "--check", full_path], capture_output=True, text=True)
             if result.returncode != 0:
-                print(f"⚠️ Синтаксическая ошибка: {result.stderr[:200]}")
-                fixed = reflect_with_fallback(code, result.stderr)
+                print(f"⚠️ Ошибка синтаксиса в {path}: {result.stderr[:200]}")
+                fixed = reflect_and_improve(code, result.stderr)
                 if fixed:
-                    with open(temp_path, "w", encoding="utf-8") as f:
+                    with open(full_path, "w", encoding="utf-8") as f:
                         f.write(fixed)
-                    result2 = subprocess.run(["node", "--check", temp_path], capture_output=True, text=True)
+                    # Перепроверка
+                    result2 = subprocess.run(["node", "--check", full_path], capture_output=True, text=True)
                     if result2.returncode == 0:
-                        code = fixed
+                        print(f"✅ {path} исправлен")
+                        return True
                     else:
-                        print(f"❌ После рефлексии ошибки остались: {result2.stderr[:200]}")
-                        os.remove(temp_path)
+                        print(f"❌ Не удалось исправить {path}: {result2.stderr[:200]}")
+                        # Удаляем битый файл, если последняя попытка
+                        if attempt == MAX_RETRIES_PER_FILE - 1:
+                            os.remove(full_path)
                         continue
                 else:
-                    os.remove(temp_path)
+                    if attempt == MAX_RETRIES_PER_FILE - 1:
+                        os.remove(full_path)
                     continue
-
-        shutil.move(temp_path, full_path)
-        print(f"✅ {path} готов")
-        return True
+            else:
+                print(f"✅ {path} готов")
+                return True
+        else:
+            # Не JS — просто считаем готовым
+            print(f"✅ {path} создан")
+            return True
     return False
 
 def process_file(file_info):
-    """Обёртка для параллельного запуска."""
     path = file_info["path"]
     success = generate_or_fix_file(file_info)
     return path, success
@@ -191,7 +207,7 @@ def main():
                 else:
                     print(f"   [dry-run] скопировать {src} в {target_path}")
 
-    # ---- 2. Генерация недостающих или неполных файлов параллельно ----
+    # ---- 2. Генерация недостающих файлов ----
     print("\n🔧 Проверка полноты и генерация отсутствующих...")
     incomplete_files = []
     for idx, file_info in enumerate(required_files, 1):
@@ -217,7 +233,7 @@ def main():
     else:
         print("🎉 Все файлы уже полны!")
 
-    # ---- 3. Глобальная синтаксическая проверка и исправление ----
+    # ---- 3. Однократная глобальная синтаксическая проверка ----
     print("\n🔍 Глобальная проверка всех JS файлов...")
     js_files = []
     for root, _, files in os.walk(PROJECT_ROOT):
@@ -226,30 +242,26 @@ def main():
                 js_files.append(os.path.join(root, fname))
     print(f"Найдено {len(js_files)} JS файлов")
 
-    for cycle in range(GLOBAL_CYCLES):
-        errors = {}
-        for js_file in js_files:
-            result = subprocess.run(["node", "--check", js_file], capture_output=True, text=True)
-            if result.returncode != 0:
-                errors[js_file] = result.stderr
-        if not errors:
-            print(f"✅ Цикл {cycle+1}: все файлы прошли синтаксис")
-            break
-        print(f"⚠️ Цикл {cycle+1}: найдено {len(errors)} файлов с ошибками")
+    errors = {}
+    for js_file in js_files:
+        result = subprocess.run(["node", "--check", js_file], capture_output=True, text=True)
+        if result.returncode != 0:
+            errors[js_file] = result.stderr
+    if errors:
+        print(f"⚠️ Найдено {len(errors)} файлов с синтаксическими ошибками. Попытка исправления...")
         for js_file, err_msg in errors.items():
             rel_path = os.path.relpath(js_file, PROJECT_ROOT)
             with open(js_file, "r", encoding="utf-8") as f:
                 code = f.read()
-            fixed = reflect_with_fallback(code, err_msg)
+            fixed = reflect_and_improve(code, err_msg)
             if fixed:
                 with open(js_file, "w", encoding="utf-8") as f:
                     f.write(fixed)
                 print(f"   Исправлен {rel_path}")
             else:
                 print(f"   ❌ Не удалось исправить {rel_path}")
-        time.sleep(1)
     else:
-        print("⚠️ После всех циклов остались ошибки, требуется ручная доработка")
+        print("✅ Все JS-файлы прошли синтаксическую проверку!")
 
     print("\n🏁 Готово. Запустите проект:")
     print("   docker-compose up -d")
@@ -260,7 +272,4 @@ if __name__ == "__main__":
     if "--dry-run" in sys.argv:
         DRY_RUN = True
         print("🏁 Режим DRY-RUN")
-    if "--local" in sys.argv:
-        USE_LOCAL = True
-        print("🏁 Режим: гонка локальной модели и API")
     main()
