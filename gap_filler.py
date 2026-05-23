@@ -8,24 +8,39 @@ import shutil
 from pathlib import Path
 from collections import defaultdict
 
-# Импорт исходных функций orchestrator (НЕ изменённых)
+# Импорт исходных функций orchestrator
 from orchestrator import generate_with_api, reflect_and_improve, generate_with_local, syntax_check_js
 
 # ------------------- КОНФИГУРАЦИЯ -------------------
 PLAN_FILE = "project_plan.json"
 SOURCE_DIR = "краулер"
-PROJECT_ROOT = "."
+PROJECT_ROOT = "."            # измените на "краулер", если нужно генерировать внутрь папки
 MAX_RETRIES_PER_FILE = 3
 GLOBAL_CYCLES = 3
 DRY_RUN = False
-USE_LOCAL = False            # флаг локальной работы
+USE_LOCAL = False             # включает локальный режим с fallback на API
 
-# ------------------- ЛОКАЛЬНАЯ РЕФЛЕКСИЯ -------------------
-def reflect_and_improve_local(code, error_info):
-    """Исправление ошибок через локальную модель (вместо API)."""
-    print(f"🧠 Локальная рефлексия...")
-    prompt = f"Файл содержит ошибки:\n{error_info}\n\nВот текущий код:\n```\n{code}\n```\n\nИсправь все ошибки и выдай полный исправленный код. Не используй сокращения '// ... rest of the code'. Верни только код."
-    return generate_with_local(prompt)
+# ------------------- УМНАЯ РЕФЛЕКСИЯ (FALLBACK) -------------------
+def reflect_with_fallback(code, error_info):
+    """
+    Пытается исправить код через локальную модель (если USE_LOCAL),
+    при неудаче переключается на API.
+    """
+    if USE_LOCAL:
+        print("🧠 Локальная рефлексия...")
+        prompt = (
+            f"Файл содержит ошибки:\n{error_info}\n\n"
+            f"Вот текущий код:\n```\n{code}\n```\n\n"
+            f"Исправь все ошибки и выдай полный исправленный код. "
+            f"Не используй сокращения '// ... rest of the code'. Верни только код."
+        )
+        fixed = generate_with_local(prompt)
+        if fixed is not None and fixed.strip() != "":
+            return fixed
+        else:
+            print("⚠️ Локальная рефлексия не дала результата, пробуем API...")
+    # Fallback на оригинальную API-рефлексию
+    return reflect_and_improve(code, error_info)
 
 # ------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ -------------------
 def load_plan():
@@ -81,13 +96,16 @@ def generate_or_fix_file(file_info):
     for attempt in range(MAX_RETRIES_PER_FILE):
         print(f"🔄 Генерация/исправление {path} (попытка {attempt+1})")
 
-        # Выбор генератора
+        # --- Генерация с fallback ---
+        code = None
         if USE_LOCAL:
             code = generate_with_local(prompt)
-        else:
+            if code is None or code.strip() == "":
+                print("⚠️ Локальная модель не ответила, переключаемся на API...")
+        if code is None or code.strip() == "":
             code = generate_with_api(prompt)
 
-        if not code:
+        if not code or code.strip() == "":
             time.sleep(2)
             continue
 
@@ -95,16 +113,13 @@ def generate_or_fix_file(file_info):
         with open(temp_path, "w", encoding="utf-8") as f:
             f.write(code)
 
+        # Проверка синтаксиса JS
         if path.endswith(".js"):
             result = subprocess.run(["node", "--check", temp_path], capture_output=True, text=True)
             if result.returncode != 0:
                 print(f"⚠️ Синтаксическая ошибка: {result.stderr[:200]}")
-                # Рефлексия: локальная или API
-                if USE_LOCAL:
-                    fixed = reflect_and_improve_local(code, result.stderr)
-                else:
-                    fixed = reflect_and_improve(code, result.stderr)
-
+                # Рефлексия с fallback
+                fixed = reflect_with_fallback(code, result.stderr)
                 if fixed:
                     with open(temp_path, "w", encoding="utf-8") as f:
                         f.write(fixed)
@@ -189,11 +204,8 @@ def main():
             rel_path = os.path.relpath(js_file, PROJECT_ROOT)
             with open(js_file, "r", encoding="utf-8") as f:
                 code = f.read()
-            # Рефлексия: локальная или API
-            if USE_LOCAL:
-                fixed = reflect_and_improve_local(code, err_msg)
-            else:
-                fixed = reflect_and_improve(code, err_msg)
+            # Рефлексия с fallback
+            fixed = reflect_with_fallback(code, err_msg)
             if fixed:
                 with open(js_file, "w", encoding="utf-8") as f:
                     f.write(fixed)
@@ -215,5 +227,5 @@ if __name__ == "__main__":
         print("🏁 Режим DRY-RUN")
     if "--local" in sys.argv:
         USE_LOCAL = True
-        print("🏁 Режим: только локальная модель")
+        print("🏁 Режим: сначала локальная модель, при неудаче — API")
     main()
