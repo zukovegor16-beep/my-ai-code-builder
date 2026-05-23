@@ -8,8 +8,8 @@ import shutil
 from pathlib import Path
 from collections import defaultdict
 
-# Импорт только существующих функций
-from orchestrator import generate_with_api, reflect_and_improve
+# Импорт исходных функций orchestrator (НЕ изменённых)
+from orchestrator import generate_with_api, reflect_and_improve, generate_with_local, syntax_check_js
 
 # ------------------- КОНФИГУРАЦИЯ -------------------
 PLAN_FILE = "project_plan.json"
@@ -18,6 +18,14 @@ PROJECT_ROOT = "."
 MAX_RETRIES_PER_FILE = 3
 GLOBAL_CYCLES = 3
 DRY_RUN = False
+USE_LOCAL = False            # флаг локальной работы
+
+# ------------------- ЛОКАЛЬНАЯ РЕФЛЕКСИЯ -------------------
+def reflect_and_improve_local(code, error_info):
+    """Исправление ошибок через локальную модель (вместо API)."""
+    print(f"🧠 Локальная рефлексия...")
+    prompt = f"Файл содержит ошибки:\n{error_info}\n\nВот текущий код:\n```\n{code}\n```\n\nИсправь все ошибки и выдай полный исправленный код. Не используй сокращения '// ... rest of the code'. Верни только код."
+    return generate_with_local(prompt)
 
 # ------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ -------------------
 def load_plan():
@@ -72,18 +80,31 @@ def generate_or_fix_file(file_info):
 """
     for attempt in range(MAX_RETRIES_PER_FILE):
         print(f"🔄 Генерация/исправление {path} (попытка {attempt+1})")
-        code = generate_with_api(prompt)
+
+        # Выбор генератора
+        if USE_LOCAL:
+            code = generate_with_local(prompt)
+        else:
+            code = generate_with_api(prompt)
+
         if not code:
             time.sleep(2)
             continue
+
         temp_path = full_path + ".tmp"
         with open(temp_path, "w", encoding="utf-8") as f:
             f.write(code)
+
         if path.endswith(".js"):
             result = subprocess.run(["node", "--check", temp_path], capture_output=True, text=True)
             if result.returncode != 0:
                 print(f"⚠️ Синтаксическая ошибка: {result.stderr[:200]}")
-                fixed = reflect_and_improve(code, result.stderr)   # только 2 аргумента
+                # Рефлексия: локальная или API
+                if USE_LOCAL:
+                    fixed = reflect_and_improve_local(code, result.stderr)
+                else:
+                    fixed = reflect_and_improve(code, result.stderr)
+
                 if fixed:
                     with open(temp_path, "w", encoding="utf-8") as f:
                         f.write(fixed)
@@ -97,6 +118,7 @@ def generate_or_fix_file(file_info):
                 else:
                     os.remove(temp_path)
                     continue
+
         shutil.move(temp_path, full_path)
         print(f"✅ {path} готов")
         return True
@@ -167,7 +189,11 @@ def main():
             rel_path = os.path.relpath(js_file, PROJECT_ROOT)
             with open(js_file, "r", encoding="utf-8") as f:
                 code = f.read()
-            fixed = reflect_and_improve(code, err_msg)   # только 2 аргумента
+            # Рефлексия: локальная или API
+            if USE_LOCAL:
+                fixed = reflect_and_improve_local(code, err_msg)
+            else:
+                fixed = reflect_and_improve(code, err_msg)
             if fixed:
                 with open(js_file, "w", encoding="utf-8") as f:
                     f.write(fixed)
@@ -187,4 +213,7 @@ if __name__ == "__main__":
     if "--dry-run" in sys.argv:
         DRY_RUN = True
         print("🏁 Режим DRY-RUN")
+    if "--local" in sys.argv:
+        USE_LOCAL = True
+        print("🏁 Режим: только локальная модель")
     main()
