@@ -17,9 +17,9 @@ import time
 # ------------------- НАСТРОЙКИ -------------------
 OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY")
 API_MODEL = "openrouter/free"
-LOCAL_MODEL = "qwen2.5-coder:7b"          # резерв
+LOCAL_MODEL = "llama3.1:8b"          # изменено на вашу модель
 PLAN_FILE = "project_plan.json"
-OUTPUT_DIR = "."                           # корень проекта (папка, где лежит orchestrator.py)
+OUTPUT_DIR = "."                     # корень проекта
 
 # ------------------- ФУНКЦИИ -------------------
 def generate_with_api(prompt, model=API_MODEL):
@@ -44,8 +44,8 @@ def generate_with_api(prompt, model=API_MODEL):
     return None
 
 def generate_with_local(prompt):
-    """Резервная генерация через локальную 7B."""
-    print("🖥️ Пробуем локальную 7B...")
+    """Резервная генерация через локальную 7B/8B."""
+    print("🖥️ Пробуем локальную модель...")
     try:
         result = subprocess.run(
             ["ollama", "run", LOCAL_MODEL, prompt],
@@ -61,7 +61,7 @@ def generate_with_local(prompt):
     return None
 
 def reflect_and_improve(code, error_info, file_path=""):
-    """Отправляет код + ошибки в API для исправления. file_path опционален."""
+    """Отправляет код + ошибки в API для исправления."""
     print(f"🧠 Рефлексия для {file_path if file_path else 'файла'}...")
     prompt = f"Файл {file_path} содержит ошибки:\n{error_info}\n\nВот текущий код:\n```\n{code}\n```\n\nИсправь все ошибки и выдай полный исправленный код. Не используй сокращения '// ... rest of the code'. Верни только код."
     return generate_with_api(prompt)
@@ -105,14 +105,12 @@ def generate_file(file_info, retry_limit=5):
         print(f"⏩ {path} уже существует, пропускаем")
         return True
 
-    # Создаём папку, если нужно
     os.makedirs(os.path.dirname(full_path), exist_ok=True)
 
     lines = file_info.get("lines", 200)
     description = file_info.get("description", "")
     is_js = path.endswith(".js")
 
-    # Базовый промт
     prompt = f"""Ты — эксперт Node.js. Напиши полный рабочий код для файла {path}.
 
 Описание: {description}
@@ -135,24 +133,20 @@ def generate_file(file_info, retry_limit=5):
             time.sleep(3)
             continue
 
-        # Временно сохраняем
         temp_path = full_path + ".tmp"
         with open(temp_path, "w", encoding="utf-8") as f:
             f.write(code)
 
-        # Проверка синтаксиса (только для .js)
         syntax_ok = True
         error_msg = ""
         if is_js:
             syntax_ok, error_msg = syntax_check_js(temp_path)
             if not syntax_ok:
                 print(f"⚠️ Синтаксическая ошибка в {path}:\n{error_msg[:300]}")
-                # Рефлексия: отправляем ошибку и код обратно
                 fixed = reflect_and_improve(code, error_msg, path)
                 if fixed:
                     with open(temp_path, "w", encoding="utf-8") as f:
                         f.write(fixed)
-                    # Повторная проверка
                     syntax_ok, error_msg = syntax_check_js(temp_path)
                     if syntax_ok:
                         code = fixed
@@ -167,9 +161,7 @@ def generate_file(file_info, retry_limit=5):
             print(f"✅ {path} сгенерирован и прошёл проверку")
             return True
         else:
-            # Удаляем временный файл и пробуем снова, обновляя промт (можно включить ошибку в промт)
             os.remove(temp_path)
-            # Добавляем ошибку в промт для следующей попытки (чтобы модель знала)
             prompt = f"""Файл {path} не прошёл проверку. Ошибка:
 {error_msg}
 
@@ -188,9 +180,7 @@ def main():
         print("❌ Установите переменную окружения OPENROUTER_API_KEY")
         sys.exit(1)
 
-    # Если передан аргумент (режим одного файла) – оставляем совместимость со старым способом
     if len(sys.argv) > 1 and sys.argv[1] != "--plan":
-        # старый режим: первый аргумент – промт
         prompt = " ".join(sys.argv[1:])
         print("📝 Режим одного файла (совместимость)")
         code = generate_with_api(prompt)
@@ -200,7 +190,6 @@ def main():
             print("💾 Сохранено в generated_code.py")
         return
 
-    # Основной режим: чтение project_plan.json
     if not os.path.exists(PLAN_FILE):
         print(f"❌ Файл {PLAN_FILE} не найден. Запусти с аргументом-промтом или создай план.")
         sys.exit(1)
@@ -218,7 +207,6 @@ def main():
         print(f"\n🔨 [{idx}/{total}] Обработка {file_info['path']}")
         if generate_file(file_info, retry_limit=5):
             success_count += 1
-        # Небольшая пауза, чтобы не перегружать API
         time.sleep(1)
 
     print(f"\n🏁 Итог: успешно сгенерировано {success_count} из {total} файлов")
